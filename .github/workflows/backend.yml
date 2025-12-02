@@ -2,7 +2,7 @@ name: Deploy Backend to VPS
 
 on:
   push:
-    branches: ["main"]
+    branches: ["master"]
 
 jobs:
   deploy-backend:
