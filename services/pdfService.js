@@ -41,11 +41,22 @@ class PDFService {
         this.doc.end();
 
         stream.on('finish', () => {
-          resolve({
-            fileName,
-            filePath,
-            fileSize: fs.statSync(filePath).size
-          });
+          // Add a small delay to ensure file is fully written to disk
+          setTimeout(() => {
+            try {
+              if (fs.existsSync(filePath)) {
+                resolve({
+                  fileName,
+                  filePath,
+                  fileSize: fs.statSync(filePath).size
+                });
+              } else {
+                reject(new Error(`PDF file was not created at ${filePath}`));
+              }
+            } catch (error) {
+              reject(error);
+            }
+          }, 100); // 100ms delay to ensure file is written
         });
 
         stream.on('error', (error) => {
@@ -61,7 +72,7 @@ class PDFService {
   // Generate quotation content
   generateQuotationContent(inquiry, quotationData) {
     // Header
-    this.generateHeader(inquiry);
+    this.generateHeader(inquiry, quotationData);
     
     // Customer Information
     this.generateCustomerSection(inquiry);
@@ -80,7 +91,7 @@ class PDFService {
   }
 
   // Generate header with company logo and info
-  generateHeader(inquiry) {
+  generateHeader(inquiry, quotationData) {
     // Company Logo (placeholder - replace with actual logo path)
     // this.doc.image(path.join(__dirname, '../assets/logo.png'), 50, 50, { width: 100 });
     

@@ -970,9 +970,16 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.userId;
+    const { download } = req.query;
 
-    // Find the quotation
-    const quotation = await Quotation.findById(id);
+    // Try to find quotation by ID first (if id is a quotation ID)
+    let quotation = await Quotation.findById(id);
+    
+    // If not found, try to find by inquiryId (if id is an inquiry ID)
+    if (!quotation) {
+      quotation = await Quotation.findOne({ inquiryId: id });
+    }
+    
     if (!quotation) {
       return res.status(404).json({
         success: false,
@@ -980,20 +987,124 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       });
     }
 
-    // Check if quotation has a PDF
-    if (!quotation.quotationPdf) {
-      return res.status(404).json({
-        success: false,
-        message: 'Quotation PDF not available'
-      });
+    // Check access control: Admin/Back Office can view any PDF, customers can only view their own
+    const isAdmin = ['admin', 'backoffice', 'subadmin'].includes(req.userRole);
+    if (!isAdmin) {
+      // For customers, verify the quotation belongs to them
+      const inquiry = await Inquiry.findById(quotation.inquiryId);
+      if (!inquiry || inquiry.customer.toString() !== userId.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. This quotation does not belong to you.'
+        });
+      }
     }
 
-    // For now, return a message that PDF is not implemented
-    // TODO: Implement actual PDF generation/retrieval
-    res.json({
-      success: false,
-      message: 'PDF generation not implemented yet'
-    });
+    // Helper function to generate PDF
+    const generatePDF = async () => {
+      // Get inquiry data for PDF generation
+      const inquiry = await Inquiry.findById(quotation.inquiryId).populate('customer', 'firstName lastName email companyName phoneNumber');
+      if (!inquiry) {
+        throw new Error('Inquiry not found for this quotation');
+      }
+
+      // Prepare quotation data for PDF generation
+      const pdfQuotationData = {
+        parts: quotation.items && quotation.items.length > 0 
+          ? quotation.items.map(item => ({
+              partRef: item.partRef || '',
+              material: item.material || 'Zintec',
+              thickness: item.thickness || '1.5',
+              quantity: item.quantity || 1,
+              price: item.unitPrice || 0,
+              remarks: item.remark || ''
+            }))
+          : [],
+        totalAmount: quotation.totalAmount || 0,
+        currency: 'USD',
+        validUntil: quotation.validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        terms: quotation.terms || 'Standard manufacturing terms apply. Payment required before production begins.'
+      };
+
+      // Generate PDF
+      const pdfResult = await pdfService.generateQuotationPDF(inquiry, pdfQuotationData);
+      console.log('PDF generated successfully:', pdfResult.fileName);
+
+      // Update quotation with PDF filename
+      quotation.quotationPdf = pdfResult.fileName;
+      await quotation.save();
+      
+      return pdfResult.fileName;
+    };
+
+    // Check if quotation has a PDF filename
+    let pdfFileName = quotation.quotationPdf;
+    let pdfPath;
+
+    // If no PDF filename exists, generate one
+    if (!pdfFileName) {
+      console.log('No PDF filename found, attempting to generate PDF...');
+      try {
+        pdfFileName = await generatePDF();
+      } catch (pdfError) {
+        console.error('PDF generation failed:', pdfError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to generate PDF',
+          error: pdfError.message
+        });
+      }
+    }
+
+    // Construct the PDF file path
+    pdfPath = path.join(__dirname, '../uploads/quotations', pdfFileName);
+
+    // Check if file exists, if not, regenerate it
+    if (!fs.existsSync(pdfPath)) {
+      console.log('PDF file not found at path:', pdfPath);
+      console.log('Attempting to regenerate PDF...');
+      
+      try {
+        pdfFileName = await generatePDF();
+        pdfPath = path.join(__dirname, '../uploads/quotations', pdfFileName);
+        
+        // Wait a bit and retry if file doesn't exist immediately (file system delay)
+        let retries = 3;
+        while (!fs.existsSync(pdfPath) && retries > 0) {
+          console.log(`Waiting for PDF file to be written... (${retries} retries left)`);
+          await new Promise(resolve => setTimeout(resolve, 200)); // Wait 200ms
+          retries--;
+        }
+        
+        // Verify the new file exists
+        if (!fs.existsSync(pdfPath)) {
+          console.error('Generated PDF file still not found at path:', pdfPath);
+          return res.status(500).json({
+            success: false,
+            message: 'PDF generation completed but file not found',
+            details: `Generated file: ${pdfFileName}`
+          });
+        }
+      } catch (pdfError) {
+        console.error('PDF regeneration failed:', pdfError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to regenerate PDF',
+          error: pdfError.message
+        });
+      }
+    }
+
+    // Set appropriate headers
+    if (download === 'true') {
+      res.setHeader('Content-Disposition', `attachment; filename="${pdfFileName}"`);
+    } else {
+      res.setHeader('Content-Disposition', `inline; filename="${pdfFileName}"`);
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+
+    // Send the PDF file
+    res.sendFile(path.resolve(pdfPath));
 
   } catch (error) {
     console.error('Get quotation PDF error:', error);
