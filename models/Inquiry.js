@@ -23,7 +23,14 @@ const inquirySchema = new mongoose.Schema({
   files: [{
     originalName: String,
     fileName: String,
-    filePath: String,
+    fileData: {
+      type: Buffer,
+      required: false
+    },
+    contentType: {
+      type: String,
+      required: false
+    },
     fileSize: Number,
     fileType: String,
     uploadedAt: {

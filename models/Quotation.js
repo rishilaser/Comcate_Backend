@@ -44,8 +44,22 @@ const quotationSchema = new mongoose.Schema({
     remark: String
   }],
   quotationPdf: {
-    type: String,
-    required: false
+    data: {
+      type: Buffer,
+      required: false
+    },
+    contentType: {
+      type: String,
+      default: 'application/pdf'
+    },
+    fileName: {
+      type: String,
+      required: false
+    },
+    generatedAt: {
+      type: Date,
+      required: false
+    }
   },
   status: {
     type: String,

@@ -23,10 +23,27 @@ const authenticateToken = (req, res, next) => {
 
   jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-here-make-it-very-long-and-secure-for-production-use', (err, decoded) => {
     if (err) {
-      console.log('Token verification failed:', err.message);
+      console.log('Token verification failed:', {
+        error: err.name,
+        message: err.message,
+        tokenLength: token.length,
+        tokenPreview: token.substring(0, 20) + '...'
+      });
+      
+      // Provide more specific error messages
+      let errorMessage = 'Invalid token';
+      if (err.name === 'TokenExpiredError') {
+        errorMessage = 'Token has expired. Please login again.';
+      } else if (err.name === 'JsonWebTokenError') {
+        errorMessage = 'Invalid token format. Please login again.';
+      } else if (err.name === 'NotBeforeError') {
+        errorMessage = 'Token not active yet.';
+      }
+      
       return res.status(403).json({ 
         success: false,
-        message: 'Invalid token' 
+        message: errorMessage,
+        error: err.name
       });
     }
     

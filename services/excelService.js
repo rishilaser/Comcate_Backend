@@ -1,11 +1,18 @@
 const XLSX = require('xlsx');
 const fs = require('fs');
 
-// Process Excel file and extract component data
-const processExcelFile = async (filePath) => {
+// Process Excel file and extract component data (works with buffer or file path)
+const processExcelFile = async (filePathOrBuffer) => {
   try {
-    // Read the Excel file
-    const workbook = XLSX.readFile(filePath);
+    // Read the Excel file - handle both buffer and file path
+    let workbook;
+    if (Buffer.isBuffer(filePathOrBuffer)) {
+      // If it's a buffer, read from buffer
+      workbook = XLSX.read(filePathOrBuffer, { type: 'buffer' });
+    } else {
+      // If it's a file path, read from file (backward compatibility)
+      workbook = XLSX.readFile(filePathOrBuffer);
+    }
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
     
@@ -124,20 +131,21 @@ const generateExcelTemplate = () => {
   return workbook;
 };
 
-// Save Excel template to file
-const saveExcelTemplate = (filePath) => {
+// Generate Excel template as buffer (for direct download, no file system)
+const generateExcelTemplateBuffer = () => {
   try {
     const workbook = generateExcelTemplate();
-    XLSX.writeFile(workbook, filePath);
-    return true;
+    // Generate buffer instead of saving to file
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    return buffer;
   } catch (error) {
-    console.error('Error saving Excel template:', error);
-    return false;
+    console.error('Error generating Excel template buffer:', error);
+    return null;
   }
 };
 
 module.exports = {
   processExcelFile,
   generateExcelTemplate,
-  saveExcelTemplate
+  generateExcelTemplateBuffer
 };

@@ -11,20 +11,8 @@ const pdfService = require('../services/pdfService');
 const Quotation = require('../models/Quotation');
 const Inquiry = require('../models/Inquiry');
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadPath = path.join(__dirname, '../uploads/quotations');
-    if (!fs.existsSync(uploadPath)) {
-      fs.mkdirSync(uploadPath, { recursive: true });
-    }
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, `quotation-${uniqueSuffix}${path.extname(file.originalname)}`);
-  }
-});
+// Configure multer for file uploads - store in memory (buffer) for database storage
+const storage = multer.memoryStorage();
 
 const upload = multer({
   storage: storage,
@@ -152,7 +140,12 @@ router.post('/create', [
         totalPrice: part.totalPrice || 0,
         remark: part.remarks || part.remark || ''
       })) : [],
-      quotationPdf: req.file ? req.file.filename : null, // Use actual uploaded filename from multer
+      quotationPdf: req.file ? {
+        data: req.file.buffer,
+        contentType: req.file.mimetype || 'application/pdf',
+        fileName: req.file.originalname,
+        generatedAt: new Date()
+      } : null,
       status: 'draft',
       validUntil: req.body.validUntil ? new Date(req.body.validUntil) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now if not provided
       terms: req.body.terms || 'Standard manufacturing terms apply. Payment required before production begins.',
@@ -186,10 +179,10 @@ router.post('/create', [
 
     // Generate PDF for the quotation (only if not already uploaded)
     console.log('=== STEP 11.5: CHECKING PDF ===');
-    console.log('Uploaded file:', req.file ? req.file.filename : 'None');
-    console.log('Current quotationPdf:', savedQuotation.quotationPdf);
+    console.log('Uploaded file:', req.file ? req.file.originalname : 'None');
+    console.log('Current quotationPdf:', savedQuotation.quotationPdf ? 'Exists' : 'None');
     
-    if (!savedQuotation.quotationPdf || savedQuotation.quotationPdf === null) {
+    if (!savedQuotation.quotationPdf || !savedQuotation.quotationPdf.data) {
       console.log('No PDF uploaded, generating PDF...');
       try {
         // Prepare quotation data for PDF generation
@@ -208,20 +201,25 @@ router.post('/create', [
           terms: terms || 'Standard manufacturing terms apply. Payment required before production begins.'
         };
 
-        // Generate PDF
+        // Generate PDF as buffer
         const pdfResult = await pdfService.generateQuotationPDF(inquiry, pdfQuotationData);
         console.log('PDF generated successfully:', pdfResult.fileName);
 
-        // Update quotation with PDF filename
-        savedQuotation.quotationPdf = pdfResult.fileName;
+        // Update quotation with PDF buffer in database
+        savedQuotation.quotationPdf = {
+          data: pdfResult.buffer,
+          contentType: pdfResult.contentType,
+          fileName: pdfResult.fileName,
+          generatedAt: new Date()
+        };
         await savedQuotation.save();
-        console.log('Quotation updated with PDF filename');
+        console.log('Quotation updated with PDF buffer in database');
       } catch (pdfError) {
         console.error('PDF generation failed:', pdfError);
         // Don't fail the request if PDF generation fails
       }
     } else {
-      console.log('✅ PDF already uploaded, skipping generation:', savedQuotation.quotationPdf);
+      console.log('✅ PDF already uploaded, skipping generation');
     }
 
     // Update inquiry status to 'quoted'
@@ -392,12 +390,17 @@ router.post('/upload', [
       };
     }
 
-    // Create quotation object with uploaded PDF filename (not full path)
+    // Create quotation object with uploaded PDF buffer (stored in database)
     const quotationData = {
       inquiryId: inquiryId.toString(),
       customerInfo: parsedCustomerInfo,
       totalAmount: parseFloat(totalAmount),
-      quotationPdf: req.file.filename, // Store only filename, not full path
+      quotationPdf: {
+        data: req.file.buffer,
+        contentType: req.file.mimetype || 'application/pdf',
+        fileName: req.file.originalname,
+        generatedAt: new Date()
+      },
       items: [],
       status: 'draft',
       validUntil: validUntil ? new Date(validUntil) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
@@ -410,7 +413,7 @@ router.post('/upload', [
 
     // Save quotation to database
     const savedQuotation = await Quotation.create(quotationData);
-    console.log('Quotation saved successfully with PDF:', savedQuotation.quotationPdf);
+    console.log('Quotation saved successfully with PDF in database:', savedQuotation.quotationPdf?.fileName);
 
     // Update inquiry status
     await Inquiry.findByIdAndUpdate(inquiryId, { 
@@ -964,7 +967,7 @@ router.post('/:id/response', authenticateToken, async (req, res) => {
 });
 
 // @route   GET /api/quotation/:id/pdf
-// @desc    Get quotation PDF
+// @desc    Get quotation PDF from database
 // @access  Private
 router.get('/:id/pdf', authenticateToken, async (req, res) => {
   try {
@@ -1000,97 +1003,90 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       }
     }
 
-    // Helper function to generate PDF
-    const generatePDF = async () => {
-      // Get inquiry data for PDF generation
-      const inquiry = await Inquiry.findById(quotation.inquiryId).populate('customer', 'firstName lastName email companyName phoneNumber');
-      if (!inquiry) {
-        throw new Error('Inquiry not found for this quotation');
+    // Helper function to generate and save PDF to database
+    const generateAndSavePDF = async () => {
+      try {
+        // Verify pdfService is available
+        if (!pdfService || typeof pdfService.generateQuotationPDF !== 'function') {
+          throw new Error('PDF generation method not available');
+        }
+
+        // Get inquiry data for PDF generation
+        const inquiry = await Inquiry.findById(quotation.inquiryId).populate('customer', 'firstName lastName email companyName phoneNumber');
+        if (!inquiry) {
+          throw new Error('Inquiry not found for this quotation');
+        }
+
+        // Prepare quotation data for PDF generation
+        const pdfQuotationData = {
+          parts: quotation.items && quotation.items.length > 0 
+            ? quotation.items.map(item => ({
+                partRef: item.partRef || '',
+                material: item.material || 'Zintec',
+                thickness: item.thickness || '1.5',
+                quantity: item.quantity || 1,
+                price: item.unitPrice || 0,
+                remarks: item.remark || ''
+              }))
+            : [],
+          totalAmount: quotation.totalAmount || 0,
+          currency: 'USD',
+          validUntil: quotation.validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+          terms: quotation.terms || 'Standard manufacturing terms apply. Payment required before production begins.'
+        };
+
+        // Generate PDF as buffer
+        const pdfResult = await pdfService.generateQuotationPDF(inquiry, pdfQuotationData);
+        console.log('PDF generated successfully:', pdfResult.fileName);
+
+        // Save PDF buffer to database
+        quotation.quotationPdf = {
+          data: pdfResult.buffer,
+          contentType: pdfResult.contentType,
+          fileName: pdfResult.fileName,
+          generatedAt: new Date()
+        };
+        await quotation.save();
+        
+        return pdfResult;
+      } catch (pdfGenError) {
+        console.error('PDF generation error details:', {
+          message: pdfGenError.message,
+          stack: pdfGenError.stack,
+          name: pdfGenError.name
+        });
+        throw pdfGenError;
       }
-
-      // Prepare quotation data for PDF generation
-      const pdfQuotationData = {
-        parts: quotation.items && quotation.items.length > 0 
-          ? quotation.items.map(item => ({
-              partRef: item.partRef || '',
-              material: item.material || 'Zintec',
-              thickness: item.thickness || '1.5',
-              quantity: item.quantity || 1,
-              price: item.unitPrice || 0,
-              remarks: item.remark || ''
-            }))
-          : [],
-        totalAmount: quotation.totalAmount || 0,
-        currency: 'USD',
-        validUntil: quotation.validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-        terms: quotation.terms || 'Standard manufacturing terms apply. Payment required before production begins.'
-      };
-
-      // Generate PDF
-      const pdfResult = await pdfService.generateQuotationPDF(inquiry, pdfQuotationData);
-      console.log('PDF generated successfully:', pdfResult.fileName);
-
-      // Update quotation with PDF filename
-      quotation.quotationPdf = pdfResult.fileName;
-      await quotation.save();
-      
-      return pdfResult.fileName;
     };
 
-    // Check if quotation has a PDF filename
-    let pdfFileName = quotation.quotationPdf;
-    let pdfPath;
+    // Check if quotation has PDF data in database
+    let pdfBuffer = null;
+    let pdfFileName = 'quotation.pdf';
 
-    // If no PDF filename exists, generate one
-    if (!pdfFileName) {
-      console.log('No PDF filename found, attempting to generate PDF...');
+    if (quotation.quotationPdf && quotation.quotationPdf.data) {
+      // PDF exists in database
+      pdfBuffer = quotation.quotationPdf.data;
+      pdfFileName = quotation.quotationPdf.fileName || `quotation-${quotation.quotationNumber || quotation._id}.pdf`;
+      console.log('PDF retrieved from database');
+    } else {
+      // Generate PDF if it doesn't exist
+      console.log('No PDF found in database, generating PDF...');
       try {
-        pdfFileName = await generatePDF();
+        const pdfResult = await generateAndSavePDF();
+        pdfBuffer = pdfResult.buffer;
+        pdfFileName = pdfResult.fileName;
       } catch (pdfError) {
-        console.error('PDF generation failed:', pdfError);
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to generate PDF',
-          error: pdfError.message
+        console.error('PDF generation failed:', {
+          error: pdfError.message,
+          stack: pdfError.stack,
+          quotationId: quotation._id,
+          inquiryId: quotation.inquiryId
         });
-      }
-    }
-
-    // Construct the PDF file path
-    pdfPath = path.join(__dirname, '../uploads/quotations', pdfFileName);
-
-    // Check if file exists, if not, regenerate it
-    if (!fs.existsSync(pdfPath)) {
-      console.log('PDF file not found at path:', pdfPath);
-      console.log('Attempting to regenerate PDF...');
-      
-      try {
-        pdfFileName = await generatePDF();
-        pdfPath = path.join(__dirname, '../uploads/quotations', pdfFileName);
-        
-        // Wait a bit and retry if file doesn't exist immediately (file system delay)
-        let retries = 3;
-        while (!fs.existsSync(pdfPath) && retries > 0) {
-          console.log(`Waiting for PDF file to be written... (${retries} retries left)`);
-          await new Promise(resolve => setTimeout(resolve, 200)); // Wait 200ms
-          retries--;
-        }
-        
-        // Verify the new file exists
-        if (!fs.existsSync(pdfPath)) {
-          console.error('Generated PDF file still not found at path:', pdfPath);
-          return res.status(500).json({
-            success: false,
-            message: 'PDF generation completed but file not found',
-            details: `Generated file: ${pdfFileName}`
-          });
-        }
-      } catch (pdfError) {
-        console.error('PDF regeneration failed:', pdfError);
         return res.status(500).json({
           success: false,
-          message: 'Failed to regenerate PDF',
-          error: pdfError.message
+          message: 'Failed to generate PDF. Please contact support if this issue persists.',
+          error: pdfError.message,
+          details: process.env.NODE_ENV === 'development' ? pdfError.stack : undefined
         });
       }
     }
@@ -1103,21 +1099,27 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
     }
     res.setHeader('Content-Type', 'application/pdf');
 
-    // Send the PDF file
-    res.sendFile(path.resolve(pdfPath));
+    // Send the PDF buffer
+    res.send(pdfBuffer);
 
   } catch (error) {
-    console.error('Get quotation PDF error:', error);
+    console.error('Get quotation PDF error:', {
+      error: error.message,
+      stack: error.stack,
+      quotationId: req.params.id,
+      userId: req.userId
+    });
     res.status(500).json({
       success: false,
-      message: 'Server error',
-      error: error.message
+      message: 'Server error while retrieving PDF. Please try again or contact support.',
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
 
 // @route   PUT /api/quotation/:id/upload-pdf
-// @desc    Upload or update PDF for existing quotation
+// @desc    Upload or update PDF for existing quotation (saves to database)
 // @access  Private (Admin/Back Office)
 router.put('/:id/upload-pdf', [
   authenticateToken,
@@ -1143,26 +1145,30 @@ router.put('/:id/upload-pdf', [
       });
     }
 
-    // Delete old PDF if exists
-    if (quotation.quotationPdf) {
-      const oldPdfPath = path.join(__dirname, '../uploads/quotations', quotation.quotationPdf);
-      if (fs.existsSync(oldPdfPath)) {
-        fs.unlinkSync(oldPdfPath);
-        console.log('Old PDF deleted:', oldPdfPath);
-      }
-    }
-
-    // Update quotation with new PDF
-    quotation.quotationPdf = req.file.filename;
+    // Update quotation with new PDF buffer in database
+    quotation.quotationPdf = {
+      data: req.file.buffer,
+      contentType: req.file.mimetype || 'application/pdf',
+      fileName: req.file.originalname,
+      generatedAt: new Date()
+    };
     quotation.updatedAt = new Date();
     await quotation.save();
 
-    console.log('Quotation PDF updated:', req.file.filename);
+    console.log('Quotation PDF updated in database:', req.file.originalname);
 
     res.json({
       success: true,
       message: 'PDF uploaded successfully',
-      quotation: quotation
+      quotation: {
+        _id: quotation._id,
+        quotationNumber: quotation.quotationNumber,
+        quotationPdf: {
+          fileName: quotation.quotationPdf.fileName,
+          contentType: quotation.quotationPdf.contentType,
+          generatedAt: quotation.quotationPdf.generatedAt
+        }
+      }
     });
 
   } catch (error) {

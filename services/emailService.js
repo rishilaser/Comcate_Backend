@@ -190,32 +190,35 @@ const sendInquiryNotification = async (inquiry) => {
       
       for (const file of inquiry.files) {
         try {
-          // Check if file exists
-          if (fs.existsSync(file.filePath)) {
-            // Determine content type based on file extension
-            let contentType = 'application/octet-stream';
+          // Check if file data exists in database
+          if (file.fileData && Buffer.isBuffer(file.fileData)) {
+            // Use contentType from database or determine from file extension
+            let contentType = file.contentType || 'application/octet-stream';
             const fileName = file.originalName.toLowerCase();
             
-            if (fileName.endsWith('.pdf')) {
-              contentType = 'application/pdf';
-            } else if (fileName.endsWith('.dwg')) {
-              contentType = 'application/dwg';
-            } else if (fileName.endsWith('.dxf')) {
-              contentType = 'application/dxf';
-            } else if (fileName.endsWith('.xls')) {
-              contentType = 'application/vnd.ms-excel';
-            } else if (fileName.endsWith('.xlsx') || fileName.endsWith('.xlsm')) {
-              contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+            if (!contentType || contentType === 'application/octet-stream') {
+              if (fileName.endsWith('.pdf')) {
+                contentType = 'application/pdf';
+              } else if (fileName.endsWith('.dwg')) {
+                contentType = 'application/dwg';
+              } else if (fileName.endsWith('.dxf')) {
+                contentType = 'application/dxf';
+              } else if (fileName.endsWith('.xls')) {
+                contentType = 'application/vnd.ms-excel';
+              } else if (fileName.endsWith('.xlsx') || fileName.endsWith('.xlsm')) {
+                contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+              }
             }
             
+            // Use buffer from database instead of file path
             attachments.push({
               filename: file.originalName,
-              path: file.filePath,
+              content: file.fileData, // Use buffer from database
               contentType: contentType
             });
             console.log(`✅ Added attachment: ${file.originalName} (${contentType})`);
           } else {
-            console.warn(`⚠️ File not found: ${file.filePath}`);
+            console.warn(`⚠️ File data not found in database: ${file.originalName}`);
           }
         } catch (error) {
           console.error(`❌ Error adding attachment ${file.originalName}:`, error);

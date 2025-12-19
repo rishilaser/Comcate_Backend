@@ -31,6 +31,8 @@ if (!fs.existsSync(inquiriesDir)) {
   fs.mkdirSync(inquiriesDir, { recursive: true });
 }
 
+// Note: PDFs are now stored in database, no need for quotations directory
+
 // Security middleware with CSP configuration
 app.use(helmet({
   contentSecurityPolicy: {
