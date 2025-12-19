@@ -1,11 +1,13 @@
 const PDFDocument = require('pdfkit');
+const fs = require('fs');
+const path = require('path');
 
 class PDFService {
   constructor() {
     this.doc = null;
   }
 
-  // Generate quotation PDF as buffer (stored in database)
+  // Generate quotation PDF
   async generateQuotationPDF(inquiry, quotationData) {
     return new Promise((resolve, reject) => {
       try {
@@ -19,35 +21,47 @@ class PDFService {
           }
         });
 
-        // Create buffer to store PDF data
-        const chunks = [];
+        // Create write stream
         const fileName = `quotation_${inquiry.inquiryNumber}_${Date.now()}.pdf`;
+        const filePath = path.join(__dirname, '../uploads/quotations', fileName);
+        
+        // Ensure directory exists
+        const dir = path.dirname(filePath);
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
 
-        // Pipe PDF document to buffer
-        this.doc.on('data', (chunk) => {
-          chunks.push(chunk);
-        });
-
-        this.doc.on('end', () => {
-          // Combine all chunks into a single buffer
-          const pdfBuffer = Buffer.concat(chunks);
-          resolve({
-            buffer: pdfBuffer,
-            fileName: fileName,
-            fileSize: pdfBuffer.length,
-            contentType: 'application/pdf'
-          });
-        });
-
-        this.doc.on('error', (error) => {
-          reject(error);
-        });
+        const stream = fs.createWriteStream(filePath);
+        this.doc.pipe(stream);
 
         // Generate PDF content
         this.generateQuotationContent(inquiry, quotationData);
 
         // Finalize PDF
         this.doc.end();
+
+        stream.on('finish', () => {
+          // Add a small delay to ensure file is fully written to disk
+          setTimeout(() => {
+            try {
+              if (fs.existsSync(filePath)) {
+                resolve({
+                  fileName,
+                  filePath,
+                  fileSize: fs.statSync(filePath).size
+                });
+              } else {
+                reject(new Error(`PDF file was not created at ${filePath}`));
+              }
+            } catch (error) {
+              reject(error);
+            }
+          }, 100); // 100ms delay to ensure file is written
+        });
+
+        stream.on('error', (error) => {
+          reject(error);
+        });
 
       } catch (error) {
         reject(error);

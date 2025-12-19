@@ -30,8 +30,20 @@ router.get('/health', (req, res) => {
   });
 });
 
-// Configure multer for file uploads - store in memory (buffer) for database storage
-const storage = multer.memoryStorage();
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(__dirname, '..', 'uploads', 'inquiries');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
 
 const fileFilter = (req, file, cb) => {
   const allowedTypes = ['.dwg', '.dxf', '.zip', '.pdf', '.xlsx', '.xls'];
@@ -108,7 +120,7 @@ router.post('/test-model', async (req, res) => {
       files: [{
         originalName: 'test.pdf',
         fileName: 'test.pdf',
-        fileData: Buffer.from('test'),
+        filePath: '/test/path',
         fileSize: 1024,
         fileType: '.pdf'
       }],
@@ -301,21 +313,14 @@ router.post('/', authenticateToken, upload.array('files', 10), handleMulterError
       });
     }
 
-    // Process uploaded files - store in database as buffers
-    const files = req.files.map(file => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const fileName = `files-${uniqueSuffix}${path.extname(file.originalname)}`;
-      
-      return {
-        originalName: file.originalname,
-        fileName: fileName,
-        fileData: file.buffer, // Store file buffer in database
-        contentType: file.mimetype,
-        fileSize: file.size,
-        fileType: path.extname(file.originalname).toLowerCase(),
-        uploadedAt: new Date()
-      };
-    });
+    // Process uploaded files
+    const files = req.files.map(file => ({
+      originalName: file.originalname,
+      fileName: file.filename,
+      filePath: file.path,
+      fileSize: file.size,
+      fileType: path.extname(file.originalname).toLowerCase()
+    }));
 
 
     // Process Excel files to extract component data (optimized)
@@ -326,8 +331,7 @@ router.post('/', authenticateToken, upload.array('files', 10), handleMulterError
     if (excelFiles.length > 0) {
       const excelPromises = excelFiles.map(async (excelFile) => {
         try {
-          // Pass buffer directly to processExcelFile
-          const excelResult = await processExcelFile(excelFile.fileData);
+          const excelResult = await processExcelFile(excelFile.filePath);
           if (excelResult.success && excelResult.components.length > 0) {
             return excelResult.components;
           }
@@ -732,20 +736,30 @@ router.get('/my-inquiries', authenticateToken, async (req, res) => {
   }
 });
 
-// Download Excel template (generated as buffer, no file system)
+// Download Excel template
 router.get('/excel-template', async (req, res) => {
   try {
-    const { generateExcelTemplateBuffer } = require('../services/excelService');
+    const { generateExcelTemplate, saveExcelTemplate } = require('../services/excelService');
     
-    // Generate template as buffer
-    const buffer = generateExcelTemplateBuffer();
+    // Create temporary file path
+    const tempPath = path.join(__dirname, '..', 'uploads', 'templates', 'component-template.xlsx');
     
-    if (buffer) {
-      // Set headers and send buffer directly
-      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      res.setHeader('Content-Disposition', 'attachment; filename="component-specification-template.xlsx"');
-      res.setHeader('Content-Length', buffer.length);
-      res.send(buffer);
+    // Ensure directory exists
+    const templateDir = path.dirname(tempPath);
+    if (!fs.existsSync(templateDir)) {
+      fs.mkdirSync(templateDir, { recursive: true });
+    }
+    
+    // Generate and save template
+    const success = saveExcelTemplate(tempPath);
+    
+    if (success) {
+      res.download(tempPath, 'component-specification-template.xlsx', (err) => {
+        // Clean up temp file after download
+        if (fs.existsSync(tempPath)) {
+          fs.unlinkSync(tempPath);
+        }
+      });
     } else {
       res.status(500).json({
         success: false,
@@ -893,26 +907,36 @@ router.get('/:id/files/:filename/download', authenticateToken, async (req, res) 
       });
     }
 
-    console.log('File found:', file.originalName);
+    console.log('File found:', file.originalName, 'Path:', file.filePath);
 
-    // Check if file data exists in database
-    if (!file.fileData || !Buffer.isBuffer(file.fileData)) {
-      console.log('File data not found in database for:', file.originalName);
+    // Check if file exists on disk
+    if (!fs.existsSync(file.filePath)) {
+      console.log('File does not exist on disk:', file.filePath);
       return res.status(404).json({
         success: false,
-        message: 'File not found in database'
+        message: 'File not found on server'
       });
     }
 
-    console.log('File data found in database, starting download...');
+    console.log('File exists, starting download...');
 
-    // Set appropriate headers and send file from database
+    // Set appropriate headers and send file
     res.setHeader('Content-Disposition', `attachment; filename="${file.originalName}"`);
-    res.setHeader('Content-Type', file.contentType || 'application/octet-stream');
-    res.setHeader('Content-Length', file.fileSize || file.fileData.length);
+    res.setHeader('Content-Type', 'application/octet-stream');
     
-    // Send file buffer from database
-    res.send(file.fileData);
+    res.download(file.filePath, file.originalName, (err) => {
+      if (err) {
+        console.error('File download error:', err);
+        if (!res.headersSent) {
+          res.status(500).json({
+            success: false,
+            message: 'Error downloading file'
+          });
+        }
+      } else {
+        console.log('File download completed successfully');
+      }
+    });
 
   } catch (error) {
     console.error('File download error:', error);
@@ -947,38 +971,33 @@ router.post('/:id/upload', authenticateToken, upload.array('files', 10), handleM
 
     const uploadedFiles = [];
     
-      for (const file of req.files) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        const fileName = `files-${uniqueSuffix}${path.extname(file.originalname)}`;
-        
-        // Process Excel files to extract component data
-        if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || 
-            file.mimetype === 'application/vnd.ms-excel') {
-          try {
-            // Pass buffer directly to processExcelFile
-            const excelComponents = await processExcelFile(file.buffer);
-            // Merge with existing parts, avoiding duplicates
-            const existingPartRefs = inquiry.parts.map(part => part.partRef);
-            const newComponents = excelComponents.filter(comp => !existingPartRefs.includes(comp.partRef));
-            
-            inquiry.parts = [...inquiry.parts, ...newComponents];
-          } catch (error) {
-            console.error('Error processing Excel file:', error);
-          }
+    for (const file of req.files) {
+      // Process Excel files to extract component data
+      if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || 
+          file.mimetype === 'application/vnd.ms-excel') {
+        try {
+          const excelComponents = await processExcelFile(file.path);
+          // Merge with existing parts, avoiding duplicates
+          const existingPartRefs = inquiry.parts.map(part => part.partRef);
+          const newComponents = excelComponents.filter(comp => !existingPartRefs.includes(comp.partRef));
+          
+          inquiry.parts = [...inquiry.parts, ...newComponents];
+        } catch (error) {
+          console.error('Error processing Excel file:', error);
         }
-
-        const fileData = {
-          originalName: file.originalname,
-          fileName: fileName,
-          fileData: file.buffer, // Store file buffer in database
-          contentType: file.mimetype,
-          fileSize: file.size,
-          fileType: path.extname(file.originalname).toLowerCase(),
-          uploadedAt: new Date()
-        };
-
-        uploadedFiles.push(fileData);
       }
+
+      const fileData = {
+        originalName: file.originalname,
+        fileName: file.filename,
+        filePath: file.path,
+        fileSize: file.size,
+        fileType: file.mimetype,
+        uploadedAt: new Date()
+      };
+
+      uploadedFiles.push(fileData);
+    }
 
     inquiry.files = [...inquiry.files, ...uploadedFiles];
     inquiry.updatedAt = new Date();
@@ -1075,7 +1094,13 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       });
     }
 
-    // Files are stored in database, no need to delete from disk
+    // Delete uploaded files
+    inquiry.files.forEach(file => {
+      if (fs.existsSync(file.filePath)) {
+        fs.unlinkSync(file.filePath);
+      }
+    });
+
     await Inquiry.findByIdAndDelete(req.params.id);
 
     res.json({
@@ -1207,24 +1232,24 @@ router.get('/:id/files/download-all', authenticateToken, async (req, res) => {
       });
     }
 
-    // Filter files that have data in database
+    // Filter out files that exist on disk
     const existingFiles = inquiry.files.filter(file => {
-      const hasData = file.fileData && Buffer.isBuffer(file.fileData);
-      if (!hasData) {
-        console.log('File data not found in database:', file.originalName);
+      const exists = fs.existsSync(file.filePath);
+      if (!exists) {
+        console.log('File not found on disk:', file.filePath);
       }
-      return hasData;
+      return exists;
     });
 
     if (existingFiles.length === 0) {
-      console.log('No files with data found in database');
+      console.log('No files exist on disk');
       return res.status(404).json({
         success: false,
-        message: 'No files found in database'
+        message: 'No files found on server'
       });
     }
 
-    console.log(`Creating ZIP with ${existingFiles.length} files from database...`);
+    console.log(`Creating ZIP with ${existingFiles.length} files...`);
 
     // Set response headers
     const zipFilename = `${inquiry.inquiryNumber || inquiry._id}_files.zip`;
@@ -1265,10 +1290,10 @@ router.get('/:id/files/download-all', authenticateToken, async (req, res) => {
     // Pipe archive to response
     archive.pipe(res);
 
-    // Add files to archive from database buffers
+    // Add files to archive
     existingFiles.forEach((file, index) => {
       console.log(`Adding file ${index + 1}/${existingFiles.length}: ${file.originalName}`);
-      archive.append(file.fileData, { name: file.originalName });
+      archive.file(file.filePath, { name: file.originalName });
     });
 
     // Finalize the archive
