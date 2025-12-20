@@ -212,16 +212,57 @@ router.post('/create', [
         const pdfResult = await pdfService.generateQuotationPDF(inquiry, pdfQuotationData);
         console.log('PDF generated successfully:', pdfResult.fileName);
 
-        // Update quotation with PDF filename
-        savedQuotation.quotationPdf = pdfResult.fileName;
-        await savedQuotation.save();
-        console.log('Quotation updated with PDF filename');
+        // Read the generated PDF and store in database
+        if (fs.existsSync(pdfResult.filePath)) {
+          const pdfBuffer = fs.readFileSync(pdfResult.filePath);
+          
+          // Update quotation with PDF stored in database
+          savedQuotation.quotationPdf = pdfResult.fileName; // Keep for backward compatibility
+          savedQuotation.quotationPdfData = pdfBuffer; // Store PDF as Buffer in database
+          savedQuotation.quotationPdfFilename = pdfResult.fileName; // Store original filename
+          await savedQuotation.save();
+          
+          // Delete the temporary file after reading it
+          try {
+            fs.unlinkSync(pdfResult.filePath);
+            console.log('Temporary PDF file deleted:', pdfResult.filePath);
+          } catch (unlinkError) {
+            console.warn('Could not delete temporary PDF file:', unlinkError);
+          }
+          
+          console.log('Quotation updated with PDF stored in database');
+        } else {
+          console.warn('Generated PDF file not found at:', pdfResult.filePath);
+          // Still save the filename for backward compatibility
+          savedQuotation.quotationPdf = pdfResult.fileName;
+          await savedQuotation.save();
+        }
       } catch (pdfError) {
         console.error('PDF generation failed:', pdfError);
         // Don't fail the request if PDF generation fails
       }
     } else {
       console.log('✅ PDF already uploaded, skipping generation:', savedQuotation.quotationPdf);
+      
+      // If PDF was uploaded via file, read it and store in database
+      if (req.file && req.file.path) {
+        try {
+          const pdfBuffer = fs.readFileSync(req.file.path);
+          savedQuotation.quotationPdfData = pdfBuffer;
+          savedQuotation.quotationPdfFilename = req.file.filename;
+          await savedQuotation.save();
+          
+          // Delete the temporary file
+          try {
+            fs.unlinkSync(req.file.path);
+            console.log('Temporary uploaded file deleted:', req.file.path);
+          } catch (unlinkError) {
+            console.warn('Could not delete temporary file:', unlinkError);
+          }
+        } catch (readError) {
+          console.error('Error reading uploaded PDF file:', readError);
+        }
+      }
     }
 
     // Update inquiry status to 'quoted'
@@ -330,11 +371,28 @@ router.post('/upload', [
   upload.single('quotationPdf')
 ], async (req, res) => {
   try {
-    console.log('=== QUOTATION UPLOAD REQUEST START ===');
-    console.log('User ID:', req.userId);
-    console.log('User Role:', req.userRole);
-    console.log('Request Body:', req.body);
-    console.log('Uploaded File:', req.file);
+    console.log('📄 ===== BACKEND: QUOTATION PDF UPLOAD REQUEST START =====');
+    console.log('👤 User Details:');
+    console.log('   - User ID:', req.userId);
+    console.log('   - User Role:', req.userRole);
+    console.log('📋 Request Body:');
+    console.log('   - inquiryId:', req.body.inquiryId);
+    console.log('   - totalAmount:', req.body.totalAmount);
+    console.log('   - terms:', req.body.terms);
+    console.log('   - notes:', req.body.notes);
+    console.log('   - validUntil:', req.body.validUntil);
+    console.log('📁 Uploaded File Details:');
+    if (req.file) {
+      console.log('   - File Name:', req.file.filename);
+      console.log('   - Original Name:', req.file.originalname);
+      console.log('   - File Path:', req.file.path);
+      console.log('   - File Size:', req.file.size, 'bytes');
+      console.log('   - File Size (MB):', (req.file.size / (1024 * 1024)).toFixed(2), 'MB');
+      console.log('   - MIME Type:', req.file.mimetype);
+      console.log('   - Field Name:', req.file.fieldname);
+    } else {
+      console.log('   ⚠️  NO FILE UPLOADED!');
+    }
 
     // Validate request
     if (!req.body.inquiryId) {
@@ -392,12 +450,68 @@ router.post('/upload', [
       };
     }
 
-    // Create quotation object with uploaded PDF filename (not full path)
+    // Read PDF file and convert to Buffer for database storage
+    console.log('💾 ===== BACKEND: READING PDF FILE =====');
+    console.log('📂 File Path:', req.file.path);
+    console.log('📂 File Exists?', fs.existsSync(req.file.path));
+    
+    // Check file stats before reading
+    const fileStats = fs.statSync(req.file.path);
+    console.log('📊 File Statistics:');
+    console.log('   - File Size (from stats):', fileStats.size, 'bytes');
+    console.log('   - File Size (MB):', (fileStats.size / (1024 * 1024)).toFixed(2), 'MB');
+    console.log('   - Original File Size (from multer):', req.file.size, 'bytes');
+    
+    // Validate file size
+    if (fileStats.size < 100) {
+      console.log('   ⚠️  WARNING: File size is very small (< 100 bytes) - PDF might be corrupted or empty!');
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid PDF file: File size is too small. Please upload a valid PDF file.',
+        fileSize: fileStats.size
+      });
+    }
+    
+    const pdfBuffer = fs.readFileSync(req.file.path);
+    const pdfFilename = req.file.filename;
+    
+    console.log('✅ PDF File Read Successfully:');
+    console.log('   - Buffer Size:', pdfBuffer.length, 'bytes');
+    console.log('   - Buffer Size (MB):', (pdfBuffer.length / (1024 * 1024)).toFixed(2), 'MB');
+    console.log('   - Filename:', pdfFilename);
+    console.log('   - Is Buffer?', Buffer.isBuffer(pdfBuffer));
+    console.log('   - Buffer Type:', typeof pdfBuffer);
+    
+    // Check if buffer matches file size
+    if (pdfBuffer.length !== fileStats.size) {
+      console.log('   ⚠️  WARNING: Buffer size does not match file size!');
+      console.log('      Buffer:', pdfBuffer.length, 'bytes');
+      console.log('      File:', fileStats.size, 'bytes');
+    }
+    
+    // Check PDF header (first 4 bytes should be "%PDF")
+    const pdfHeader = pdfBuffer.slice(0, 4).toString('ascii');
+    console.log('   - PDF Header:', pdfHeader);
+    if (pdfHeader !== '%PDF') {
+      console.log('   ⚠️  WARNING: File does not appear to be a valid PDF! (Header should be "%PDF")');
+      console.log('   - First 20 bytes:', pdfBuffer.slice(0, 20).toString('hex'));
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid PDF file: File does not have a valid PDF header. Please upload a valid PDF file.',
+        detectedHeader: pdfHeader
+      });
+    } else {
+      console.log('   ✅ Valid PDF header detected');
+    }
+
+    // Create quotation object with PDF stored in database
     const quotationData = {
       inquiryId: inquiryId.toString(),
       customerInfo: parsedCustomerInfo,
       totalAmount: parseFloat(totalAmount),
-      quotationPdf: req.file.filename, // Store only filename, not full path
+      quotationPdf: pdfFilename, // Keep for backward compatibility
+      quotationPdfData: pdfBuffer, // Store PDF as Buffer in database
+      quotationPdfFilename: pdfFilename, // Store original filename
       items: [],
       status: 'draft',
       validUntil: validUntil ? new Date(validUntil) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
@@ -406,11 +520,142 @@ router.post('/upload', [
       createdBy: req.userId
     };
 
-    console.log('Quotation data to save:', quotationData);
+    console.log('💾 ===== BACKEND: PREPARING DATABASE SAVE =====');
+    console.log('📦 Quotation Data Prepared:');
+    console.log('   - Has quotationPdfData Buffer?', !!quotationData.quotationPdfData);
+    console.log('   - quotationPdfData Buffer Size:', quotationData.quotationPdfData ? quotationData.quotationPdfData.length : 'N/A', 'bytes');
+    console.log('   - quotationPdfFilename:', quotationData.quotationPdfFilename);
+    console.log('   - quotationPdf (backward compat):', quotationData.quotationPdf);
+
+    // Delete the temporary file after reading it
+    try {
+      fs.unlinkSync(req.file.path);
+      console.log('🗑️  Temporary file deleted:', req.file.path);
+    } catch (unlinkError) {
+      console.warn('⚠️  Could not delete temporary file:', unlinkError);
+    }
 
     // Save quotation to database
+    console.log('💾 ===== BACKEND: SAVING TO DATABASE =====');
+    console.log('💾 Saving quotation with PDF Buffer to MongoDB...');
     const savedQuotation = await Quotation.create(quotationData);
-    console.log('Quotation saved successfully with PDF:', savedQuotation.quotationPdf);
+    console.log('✅ Quotation Saved Successfully:');
+    console.log('   - Quotation ID:', savedQuotation._id);
+    console.log('   - Quotation Number:', savedQuotation.quotationNumber);
+    console.log('   - Quotation PDF filename:', savedQuotation.quotationPdf);
+    
+    // Verify PDF data was saved (query directly to bypass toJSON)
+    console.log('🔍 ===== BACKEND: VERIFYING DATABASE STORAGE =====');
+    const verification = await Quotation.findById(savedQuotation._id).select('quotationPdfData quotationPdfFilename quotationPdf');
+    
+    // Check Buffer properly (Mongoose Buffer handling)
+    const hasPdfData = !!verification.quotationPdfData;
+    let pdfDataSize = 0;
+    let bufferType = 'unknown';
+    let bufferConstructor = 'unknown';
+    
+    if (verification.quotationPdfData) {
+      bufferType = typeof verification.quotationPdfData;
+      bufferConstructor = verification.quotationPdfData.constructor?.name || 'unknown';
+      
+      // Try multiple ways to get the size
+      if (Buffer.isBuffer(verification.quotationPdfData)) {
+        // Direct Buffer access
+        pdfDataSize = verification.quotationPdfData.length;
+        console.log('   ✅ Buffer detected: Direct Buffer.length =', pdfDataSize, 'bytes');
+      } else if (verification.quotationPdfData.buffer && Buffer.isBuffer(verification.quotationPdfData.buffer)) {
+        // Mongoose Binary wrapper
+        pdfDataSize = verification.quotationPdfData.buffer.length;
+        console.log('   ✅ Buffer detected: Mongoose Binary.buffer.length =', pdfDataSize, 'bytes');
+      } else if (verification.quotationPdfData.subtype !== undefined) {
+        // Mongoose Binary type
+        try {
+          const buffer = Buffer.from(verification.quotationPdfData.buffer || verification.quotationPdfData);
+          pdfDataSize = buffer.length;
+          console.log('   ✅ Buffer detected: Mongoose Binary converted, length =', pdfDataSize, 'bytes');
+        } catch (e) {
+          console.log('   ⚠️  Error converting Mongoose Binary:', e.message);
+        }
+      } else if (typeof verification.quotationPdfData.length === 'function') {
+        // It's a function, try calling it
+        try {
+          pdfDataSize = verification.quotationPdfData.length();
+          console.log('   ✅ Buffer detected: Function call .length() =', pdfDataSize, 'bytes');
+        } catch (e) {
+          console.log('   ⚠️  Error calling length function:', e.message);
+        }
+      } else if (typeof verification.quotationPdfData.length === 'number') {
+        // Direct length property
+        pdfDataSize = verification.quotationPdfData.length;
+        console.log('   ✅ Buffer detected: Direct .length property =', pdfDataSize, 'bytes');
+      } else {
+        // Try to convert to Buffer
+        try {
+          const convertedBuffer = Buffer.from(verification.quotationPdfData);
+          pdfDataSize = convertedBuffer.length;
+          console.log('   ✅ Buffer detected: Converted to Buffer, length =', pdfDataSize, 'bytes');
+        } catch (e) {
+          console.log('   ⚠️  Could not determine buffer size:', e.message);
+          // Try accessing as Mongoose Binary
+          if (verification.quotationPdfData.toString) {
+            try {
+              const str = verification.quotationPdfData.toString('base64');
+              pdfDataSize = Buffer.from(str, 'base64').length;
+              console.log('   ✅ Buffer detected: Base64 conversion, length =', pdfDataSize, 'bytes');
+            } catch (e2) {
+              console.log('   ⚠️  Could not convert via base64:', e2.message);
+            }
+          }
+        }
+      }
+    }
+    
+    console.log('✅ Database Verification Results:');
+    console.log('   - Has quotationPdfData?', hasPdfData);
+    console.log('   - quotationPdfData Type:', bufferType);
+    console.log('   - quotationPdfData Constructor:', bufferConstructor);
+    console.log('   - Is Buffer?', verification.quotationPdfData ? Buffer.isBuffer(verification.quotationPdfData) : false);
+    console.log('   - quotationPdfData Size:', pdfDataSize, 'bytes');
+    console.log('   - quotationPdfData Size (KB):', pdfDataSize > 0 ? (pdfDataSize / 1024).toFixed(2) : '0.00', 'KB');
+    console.log('   - quotationPdfData Size (MB):', pdfDataSize > 0 ? (pdfDataSize / (1024 * 1024)).toFixed(2) : '0.00', 'MB');
+    console.log('   - quotationPdfFilename:', verification.quotationPdfFilename);
+    console.log('   - quotationPdf (string):', verification.quotationPdf);
+    console.log('   - PDF Stored in Database?', hasPdfData && pdfDataSize > 0 ? '✅ YES' : '❌ NO');
+    
+    if (hasPdfData && pdfDataSize > 0) {
+      console.log('   ✅ PDF successfully stored in database!');
+      console.log('   ✅ PDF Format: Valid (Size:', pdfDataSize, 'bytes =', (pdfDataSize / 1024).toFixed(2), 'KB)');
+      
+      // Verify PDF header if we can access the buffer
+      try {
+        let bufferToCheck = null;
+        if (Buffer.isBuffer(verification.quotationPdfData)) {
+          bufferToCheck = verification.quotationPdfData;
+        } else if (verification.quotationPdfData.buffer) {
+          bufferToCheck = Buffer.from(verification.quotationPdfData.buffer);
+        } else {
+          bufferToCheck = Buffer.from(verification.quotationPdfData);
+        }
+        
+        if (bufferToCheck && bufferToCheck.length > 4) {
+          const pdfHeader = bufferToCheck.slice(0, 4).toString('ascii');
+          console.log('   - PDF Header in Database:', pdfHeader);
+          if (pdfHeader === '%PDF') {
+            console.log('   ✅ Valid PDF header confirmed in database!');
+          } else {
+            console.log('   ⚠️  PDF header mismatch:', pdfHeader);
+          }
+        }
+      } catch (headerError) {
+        console.log('   ⚠️  Could not verify PDF header:', headerError.message);
+      }
+    } else if (hasPdfData && pdfDataSize === 0) {
+      console.log('   ⚠️  PDF Buffer exists but size is 0 - possible issue!');
+    } else {
+      console.log('   ❌ PDF NOT stored in database - only filename exists');
+    }
+    
+    console.log('📄 ===== BACKEND: QUOTATION PDF UPLOAD COMPLETE =====');
 
     // Update inquiry status
     await Inquiry.findByIdAndUpdate(inquiryId, { 
@@ -1037,62 +1282,117 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       return pdfResult.fileName;
     };
 
-    // Check if quotation has a PDF filename
-    let pdfFileName = quotation.quotationPdf;
-    let pdfPath;
+    // Check if PDF data exists in database (support multiple formats)
+    let pdfBuffer = null;
+    let pdfFileName = `quotation_${quotation.quotationNumber}.pdf`;
+    let contentType = 'application/pdf';
 
-    // If no PDF filename exists, generate one
-    if (!pdfFileName) {
-      console.log('No PDF filename found, attempting to generate PDF...');
-      try {
-        pdfFileName = await generatePDF();
-      } catch (pdfError) {
-        console.error('PDF generation failed:', pdfError);
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to generate PDF',
-          error: pdfError.message
-        });
+    // Try new format first: quotationPdfData (Buffer)
+    if (quotation.quotationPdfData) {
+      if (Buffer.isBuffer(quotation.quotationPdfData)) {
+        // Direct Buffer format (normal MongoDB/Mongoose format)
+        pdfBuffer = quotation.quotationPdfData;
+        pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+        console.log('PDF found in database (new format: quotationPdfData as Buffer)');
+      } else if (quotation.quotationPdfData.$binary && quotation.quotationPdfData.$binary.base64) {
+        // MongoDB export format with $binary.base64
+        pdfBuffer = Buffer.from(quotation.quotationPdfData.$binary.base64, 'base64');
+        pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+        console.log('PDF found in database (new format: quotationPdfData as $binary.base64)');
+      } else if (quotation.quotationPdfData.buffer && Buffer.isBuffer(quotation.quotationPdfData.buffer)) {
+        // Mongoose Binary wrapper format
+        pdfBuffer = quotation.quotationPdfData.buffer;
+        pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+        console.log('PDF found in database (new format: quotationPdfData as Binary wrapper)');
+      }
+    }
+    // Try old format: quotationPdfBuffer (Buffer)
+    else if (quotation.quotationPdfBuffer && Buffer.isBuffer(quotation.quotationPdfBuffer)) {
+      pdfBuffer = quotation.quotationPdfBuffer;
+      pdfFileName = quotation.quotationPdf?.fileName || quotation.quotationPdf || pdfFileName;
+      contentType = quotation.quotationPdfContentType || 'application/pdf';
+      console.log('PDF found in database (old format: quotationPdfBuffer)');
+    }
+    // Try old format: quotationPdf as object with data
+    else if (quotation.quotationPdf && typeof quotation.quotationPdf === 'object' && quotation.quotationPdf.data) {
+      // Handle MongoDB Binary format
+      if (quotation.quotationPdf.data && quotation.quotationPdf.data.buffer) {
+        pdfBuffer = Buffer.from(quotation.quotationPdf.data.buffer);
+      } else if (quotation.quotationPdf.data && quotation.quotationPdf.data.$binary) {
+        // Handle MongoDB export format with base64
+        pdfBuffer = Buffer.from(quotation.quotationPdf.data.$binary.base64, 'base64');
+      }
+      pdfFileName = quotation.quotationPdf.fileName || quotation.quotationPdf || pdfFileName;
+      contentType = quotation.quotationPdf.contentType || 'application/pdf';
+      console.log('PDF found in database (old format: quotationPdf object)');
+    }
+
+    // If PDF data exists in database, use it
+    if (pdfBuffer && Buffer.isBuffer(pdfBuffer)) {
+      console.log('Serving PDF from database, size:', pdfBuffer.length, 'bytes');
+      
+      // Set appropriate headers
+      if (download === 'true') {
+        res.setHeader('Content-Disposition', `attachment; filename="${pdfFileName}"`);
+      } else {
+        res.setHeader('Content-Disposition', `inline; filename="${pdfFileName}"`);
+      }
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', pdfBuffer.length);
+
+      // Send the PDF buffer
+      return res.send(pdfBuffer);
+    }
+
+    // If no PDF data in database, check filesystem (backward compatibility)
+    let pdfPath;
+    if (quotation.quotationPdf) {
+      pdfPath = path.join(__dirname, '../uploads/quotations', quotation.quotationPdf);
+      if (fs.existsSync(pdfPath)) {
+        console.log('PDF found in filesystem, serving from filesystem');
+        
+        // Set appropriate headers
+        if (download === 'true') {
+          res.setHeader('Content-Disposition', `attachment; filename="${quotation.quotationPdf}"`);
+        } else {
+          res.setHeader('Content-Disposition', `inline; filename="${quotation.quotationPdf}"`);
+        }
+        res.setHeader('Content-Type', 'application/pdf');
+        
+        return res.sendFile(path.resolve(pdfPath));
       }
     }
 
-    // Construct the PDF file path
-    pdfPath = path.join(__dirname, '../uploads/quotations', pdfFileName);
-
-    // Check if file exists, if not, regenerate it
-    if (!fs.existsSync(pdfPath)) {
-      console.log('PDF file not found at path:', pdfPath);
-      console.log('Attempting to regenerate PDF...');
+    // If no PDF exists, try to generate one
+    console.log('No PDF found, attempting to generate PDF...');
+    try {
+      const pdfResult = await generatePDF();
       
-      try {
-        pdfFileName = await generatePDF();
-        pdfPath = path.join(__dirname, '../uploads/quotations', pdfFileName);
+      // Read the generated PDF and store in database
+      if (fs.existsSync(pdfResult.filePath)) {
+        pdfBuffer = fs.readFileSync(pdfResult.filePath);
+        quotation.quotationPdfData = pdfBuffer;
+        quotation.quotationPdfFilename = pdfResult.fileName;
+        await quotation.save();
         
-        // Wait a bit and retry if file doesn't exist immediately (file system delay)
-        let retries = 3;
-        while (!fs.existsSync(pdfPath) && retries > 0) {
-          console.log(`Waiting for PDF file to be written... (${retries} retries left)`);
-          await new Promise(resolve => setTimeout(resolve, 200)); // Wait 200ms
-          retries--;
+        // Delete the temporary file
+        try {
+          fs.unlinkSync(pdfResult.filePath);
+        } catch (unlinkError) {
+          console.warn('Could not delete temporary PDF file:', unlinkError);
         }
         
-        // Verify the new file exists
-        if (!fs.existsSync(pdfPath)) {
-          console.error('Generated PDF file still not found at path:', pdfPath);
-          return res.status(500).json({
-            success: false,
-            message: 'PDF generation completed but file not found',
-            details: `Generated file: ${pdfFileName}`
-          });
-        }
-      } catch (pdfError) {
-        console.error('PDF regeneration failed:', pdfError);
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to regenerate PDF',
-          error: pdfError.message
-        });
+        pdfFileName = pdfResult.fileName;
+      } else {
+        throw new Error('Generated PDF file not found');
       }
+    } catch (pdfError) {
+      console.error('PDF generation failed:', pdfError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to generate PDF',
+        error: pdfError.message
+      });
     }
 
     // Set appropriate headers
@@ -1102,9 +1402,10 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       res.setHeader('Content-Disposition', `inline; filename="${pdfFileName}"`);
     }
     res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', pdfBuffer.length);
 
-    // Send the PDF file
-    res.sendFile(path.resolve(pdfPath));
+    // Send the PDF buffer
+    res.send(pdfBuffer);
 
   } catch (error) {
     console.error('Get quotation PDF error:', error);
@@ -1143,19 +1444,37 @@ router.put('/:id/upload-pdf', [
       });
     }
 
-    // Delete old PDF if exists
+    // Read PDF file and convert to Buffer for database storage
+    const pdfBuffer = fs.readFileSync(req.file.path);
+    const pdfFilename = req.file.filename;
+
+    // Delete old PDF file from filesystem if exists (backward compatibility)
     if (quotation.quotationPdf) {
       const oldPdfPath = path.join(__dirname, '../uploads/quotations', quotation.quotationPdf);
       if (fs.existsSync(oldPdfPath)) {
-        fs.unlinkSync(oldPdfPath);
-        console.log('Old PDF deleted:', oldPdfPath);
+        try {
+          fs.unlinkSync(oldPdfPath);
+          console.log('Old PDF file deleted:', oldPdfPath);
+        } catch (unlinkError) {
+          console.warn('Could not delete old PDF file:', unlinkError);
+        }
       }
     }
 
-    // Update quotation with new PDF
-    quotation.quotationPdf = req.file.filename;
+    // Update quotation with new PDF stored in database
+    quotation.quotationPdf = pdfFilename; // Keep for backward compatibility
+    quotation.quotationPdfData = pdfBuffer; // Store PDF as Buffer in database
+    quotation.quotationPdfFilename = pdfFilename; // Store original filename
     quotation.updatedAt = new Date();
     await quotation.save();
+
+    // Delete the temporary file after reading it
+    try {
+      fs.unlinkSync(req.file.path);
+      console.log('Temporary file deleted:', req.file.path);
+    } catch (unlinkError) {
+      console.warn('Could not delete temporary file:', unlinkError);
+    }
 
     console.log('Quotation PDF updated:', req.file.filename);
 
@@ -1242,6 +1561,69 @@ router.put('/:id/pricing', authenticateToken, [
     
   } catch (error) {
     console.error('Update quotation pricing error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+});
+
+// @route   GET /api/quotation/:id/verify-pdf
+// @desc    Verify if PDF is stored in database (for debugging)
+// @access  Private (Admin/Back Office)
+router.get('/:id/verify-pdf', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if user is admin
+    const isAdmin = ['admin', 'backoffice', 'subadmin'].includes(req.userRole);
+    if (!isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const quotation = await Quotation.findById(id);
+    if (!quotation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Quotation not found'
+      });
+    }
+
+    // Query directly to get Buffer fields (bypass toJSON)
+    const quotationWithData = await Quotation.findById(id)
+      .select('quotationPdf quotationPdfData quotationPdfFilename quotationPdfBuffer quotationPdfContentType')
+      .lean();
+
+    const hasPdfData = !!(quotationWithData.quotationPdfData);
+    const hasPdfBuffer = !!(quotationWithData.quotationPdfBuffer);
+    const pdfDataSize = quotationWithData.quotationPdfData ? quotationWithData.quotationPdfData.length : 0;
+    const pdfBufferSize = quotationWithData.quotationPdfBuffer ? quotationWithData.quotationPdfBuffer.length : 0;
+
+    res.json({
+      success: true,
+      quotationId: id,
+      quotationNumber: quotation.quotationNumber,
+      pdfStorage: {
+        hasQuotationPdfData: hasPdfData,
+        quotationPdfDataSize: pdfDataSize,
+        hasQuotationPdfBuffer: hasPdfBuffer,
+        quotationPdfBufferSize: pdfBufferSize,
+        quotationPdfFilename: quotationWithData.quotationPdfFilename,
+        quotationPdfString: quotationWithData.quotationPdf,
+        quotationPdfContentType: quotationWithData.quotationPdfContentType,
+        storedInDatabase: hasPdfData || hasPdfBuffer,
+        recommendation: hasPdfData || hasPdfBuffer 
+          ? 'PDF is stored in database ✅' 
+          : 'PDF is NOT stored in database - only filename exists ⚠️'
+      }
+    });
+
+  } catch (error) {
+    console.error('Verify PDF error:', error);
     res.status(500).json({
       success: false,
       message: 'Server error',

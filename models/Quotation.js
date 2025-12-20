@@ -47,6 +47,23 @@ const quotationSchema = new mongoose.Schema({
     type: String,
     required: false
   },
+  quotationPdfData: {
+    type: Buffer,
+    required: false
+  },
+  quotationPdfFilename: {
+    type: String,
+    required: false
+  },
+  // Support old format fields for backward compatibility
+  quotationPdfBuffer: {
+    type: Buffer,
+    required: false
+  },
+  quotationPdfContentType: {
+    type: String,
+    required: false
+  },
   status: {
     type: String,
     enum: ['draft', 'created', 'uploaded', 'sent', 'accepted', 'rejected', 'order_created'],
@@ -118,6 +135,31 @@ quotationSchema.pre('save', async function() {
     }
   }
 });
+
+// Exclude PDF buffer from JSON responses (too large)
+// Note: This only affects API responses, NOT database storage
+quotationSchema.methods.toJSON = function() {
+  const obj = this.toObject();
+  // Remove PDF buffers from JSON responses to avoid huge payloads
+  // The data is still stored in the database, just excluded from JSON responses
+  if (obj.quotationPdfData) {
+    delete obj.quotationPdfData;
+  }
+  if (obj.quotationPdfBuffer) {
+    delete obj.quotationPdfBuffer;
+  }
+  // Also handle old format where quotationPdf is an object
+  if (obj.quotationPdf && typeof obj.quotationPdf === 'object' && obj.quotationPdf.data) {
+    // Keep metadata but remove binary data
+    obj.quotationPdf = {
+      fileName: obj.quotationPdf.fileName,
+      contentType: obj.quotationPdf.contentType,
+      generatedAt: obj.quotationPdf.generatedAt,
+      _note: 'PDF data stored in database (excluded from JSON response)'
+    };
+  }
+  return obj;
+};
 
 // Index for better query performance
 quotationSchema.index({ inquiryId: 1 });
