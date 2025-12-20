@@ -92,8 +92,8 @@ if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
 } else {
   app.use(cors(corsOptions));
 }
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+app.use(express.json({ limit: '500mb' })); // Increased to handle multiple large PDFs
+app.use(express.urlencoded({ extended: true, limit: '500mb' })); // Increased to handle multiple large PDFs
 
 // File upload middleware - Use absolute paths with proper headers
 app.use('/uploads', (req, res, next) => {

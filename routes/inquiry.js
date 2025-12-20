@@ -60,8 +60,8 @@ const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 100 * 1024 * 1024, // 100MB limit
-    files: 10, // Maximum 10 files
+    fileSize: 100 * 1024 * 1024, // 100MB limit per file
+    files: 20, // Maximum 20 files (increased from 10)
     fieldSize: 10 * 1024 * 1024 // 10MB for text fields
   }
 });
@@ -79,9 +79,9 @@ const handleMulterErrors = (error, req, res, next) => {
     } else if (error.code === 'LIMIT_FILE_COUNT') {
       return res.status(413).json({
         success: false,
-        message: 'Too many files. Maximum 10 files allowed.',
+        message: 'Too many files. Maximum 20 files allowed.',
         error: 'TOO_MANY_FILES',
-        maxFiles: 10
+        maxFiles: 20
       });
     } else if (error.code === 'LIMIT_FIELD_COUNT') {
       return res.status(413).json({
@@ -101,7 +101,7 @@ const handleMulterErrors = (error, req, res, next) => {
 };
 
 // Test endpoint to debug data format
-router.post('/test', upload.array('files', 10), handleMulterErrors, (req, res) => {
+router.post('/test', upload.array('files', 20), handleMulterErrors, (req, res) => {
   res.json({
     success: true,
     message: 'Test endpoint working',
@@ -162,7 +162,7 @@ router.post('/test-model', async (req, res) => {
 });
 
 // Debug endpoint - no authentication required
-router.post('/debug', upload.array('files', 10), handleMulterErrors, (req, res) => {
+router.post('/debug', upload.array('files', 20), handleMulterErrors, (req, res) => {
   try {
     // Validate required fields
     const { parts, deliveryAddress, specialInstructions } = req.body;
@@ -280,7 +280,7 @@ router.post('/debug', upload.array('files', 10), handleMulterErrors, (req, res) 
 });
 
 // Create new inquiry
-router.post('/', authenticateToken, upload.array('files', 10), handleMulterErrors, [
+router.post('/', authenticateToken, upload.array('files', 20), handleMulterErrors, [
   body('parts').notEmpty().withMessage('Parts data is required'),
   body('deliveryAddress').notEmpty().withMessage('Delivery address is required'),
   body('specialInstructions').optional()
@@ -948,7 +948,7 @@ router.get('/:id/files/:filename/download', authenticateToken, async (req, res) 
 });
 
 // Upload additional files to existing inquiry
-router.post('/:id/upload', authenticateToken, upload.array('files', 10), handleMulterErrors, async (req, res) => {
+router.post('/:id/upload', authenticateToken, upload.array('files', 20), handleMulterErrors, async (req, res) => {
   try {
     const inquiry = await Inquiry.findOne({
       _id: req.params.id,
