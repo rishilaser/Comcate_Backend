@@ -912,18 +912,23 @@ router.get('/:id/files/:filename/download', authenticateToken, async (req, res) 
     const isAdmin = ['admin', 'backoffice', 'subadmin'].includes(req.userRole);
     console.log('Is admin user:', isAdmin);
     
+    // Query inquiry with fileData field included (bypass toJSON using lean)
     let inquiry;
     if (isAdmin) {
-      // Admin users can access any inquiry
+      // Admin users can access any inquiry - use lean to get raw document with fileData
       inquiry = await Inquiry.findOne({
         _id: id
-      }).populate('customer', 'firstName lastName companyName');
+      })
+      .lean() // Get raw MongoDB document, bypass toJSON
+      .populate('customer', 'firstName lastName companyName');
     } else {
       // Regular users can only access their own inquiries
       inquiry = await Inquiry.findOne({
         _id: id,
         customer: req.userId
-      }).populate('customer', 'firstName lastName companyName');
+      })
+      .lean() // Get raw MongoDB document, bypass toJSON
+      .populate('customer', 'firstName lastName companyName');
     }
 
     if (!inquiry) {
@@ -944,7 +949,7 @@ router.get('/:id/files/:filename/download', authenticateToken, async (req, res) 
     }
 
     console.log('Inquiry found:', inquiry.inquiryNumber);
-    console.log('Files in inquiry:', inquiry.files.length);
+    console.log('Files in inquiry:', inquiry.files ? inquiry.files.length : 0);
 
     // Find the file in the inquiry
     const file = inquiry.files.find(f => f.fileName === filename || f.originalName === filename);
@@ -958,7 +963,9 @@ router.get('/:id/files/:filename/download', authenticateToken, async (req, res) 
     }
 
     console.log('File found:', file.originalName);
-    console.log('File has fileData (Buffer):', !!file.fileData);
+    console.log('File has fileData:', !!file.fileData);
+    console.log('File fileData type:', file.fileData ? typeof file.fileData : 'null');
+    console.log('File fileData is Buffer:', file.fileData ? Buffer.isBuffer(file.fileData) : false);
     console.log('File path (for backward compatibility):', file.filePath);
 
     // Get file buffer - prioritize database storage, fallback to filesystem
@@ -967,23 +974,41 @@ router.get('/:id/files/:filename/download', authenticateToken, async (req, res) 
     // First, try to get from database (new format)
     if (file.fileData) {
       console.log('📦 Reading file from database (Buffer)');
+      console.log('   - fileData type:', typeof file.fileData);
+      console.log('   - fileData constructor:', file.fileData?.constructor?.name);
+      console.log('   - Is Buffer:', Buffer.isBuffer(file.fileData));
+      
       // Handle different Buffer formats (direct Buffer, Mongoose Binary, $binary.base64)
       if (Buffer.isBuffer(file.fileData)) {
         fileBuffer = file.fileData;
-      } else if (file.fileData.buffer) {
-        fileBuffer = Buffer.from(file.fileData.buffer);
+        console.log('   ✅ Direct Buffer detected');
+      } else if (file.fileData.buffer && Buffer.isBuffer(file.fileData.buffer)) {
+        fileBuffer = file.fileData.buffer;
+        console.log('   ✅ Buffer from .buffer property');
       } else if (file.fileData.$binary && file.fileData.$binary.base64) {
         try {
           fileBuffer = Buffer.from(file.fileData.$binary.base64, 'base64');
+          console.log('   ✅ Decoded from $binary.base64');
         } catch (e) {
-          console.error('Error decoding base64:', e);
+          console.error('   ❌ Error decoding base64:', e);
         }
       } else if (typeof file.fileData === 'string') {
         try {
           fileBuffer = Buffer.from(file.fileData, 'base64');
+          console.log('   ✅ Decoded from string base64');
         } catch (e) {
-          console.error('Error decoding string as base64:', e);
+          console.error('   ❌ Error decoding string as base64:', e);
         }
+      } else if (file.fileData.type === 'Buffer' && Array.isArray(file.fileData.data)) {
+        // Handle MongoDB export format: { type: 'Buffer', data: [1,2,3...] }
+        try {
+          fileBuffer = Buffer.from(file.fileData.data);
+          console.log('   ✅ Decoded from Buffer type array');
+        } catch (e) {
+          console.error('   ❌ Error creating buffer from array:', e);
+        }
+      } else {
+        console.log('   ⚠️  Unknown fileData format:', JSON.stringify(Object.keys(file.fileData || {})));
       }
       
       if (fileBuffer && fileBuffer.length > 0) {
@@ -991,6 +1016,8 @@ router.get('/:id/files/:filename/download', authenticateToken, async (req, res) 
       } else {
         console.log('⚠️  Could not extract buffer from fileData, trying filesystem...');
       }
+    } else {
+      console.log('⚠️  No fileData in database, trying filesystem...');
     }
     
     // Fallback to filesystem (old format - backward compatibility)
@@ -1319,18 +1346,23 @@ router.get('/:id/files/download-all', authenticateToken, async (req, res) => {
     const isAdmin = ['admin', 'backoffice', 'subadmin'].includes(req.userRole);
     console.log('Is admin user:', isAdmin);
     
+    // Query inquiry with fileData field included (bypass toJSON using lean)
     let inquiry;
     if (isAdmin) {
-      // Admin users can access any inquiry
+      // Admin users can access any inquiry - use lean to get raw document with fileData
       inquiry = await Inquiry.findOne({
         _id: id
-      }).populate('customer', 'firstName lastName companyName');
+      })
+      .lean() // Get raw MongoDB document, bypass toJSON
+      .populate('customer', 'firstName lastName companyName');
     } else {
       // Regular users can only access their own inquiries
       inquiry = await Inquiry.findOne({
         _id: id,
         customer: req.userId
-      }).populate('customer', 'firstName lastName companyName');
+      })
+      .lean() // Get raw MongoDB document, bypass toJSON
+      .populate('customer', 'firstName lastName companyName');
     }
 
     if (!inquiry) {
@@ -1342,7 +1374,7 @@ router.get('/:id/files/download-all', authenticateToken, async (req, res) => {
     }
 
     console.log('Inquiry found:', inquiry.inquiryNumber);
-    console.log('Files in inquiry:', inquiry.files.length);
+    console.log('Files in inquiry:', inquiry.files ? inquiry.files.length : 0);
 
     // Check if there are files to download
     if (!inquiry.files || inquiry.files.length === 0) {
