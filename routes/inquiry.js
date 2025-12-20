@@ -313,31 +313,81 @@ router.post('/', authenticateToken, upload.array('files', 20), handleMulterError
       });
     }
 
-    // Process uploaded files
-    const files = req.files.map(file => ({
-      originalName: file.originalname,
-      fileName: file.filename,
-      filePath: file.path,
-      fileSize: file.size,
-      fileType: path.extname(file.originalname).toLowerCase()
-    }));
-
+    // Process uploaded files - read into Buffer and save to database
+    console.log('💾 ===== BACKEND: PROCESSING INQUIRY FILES =====');
+    const files = [];
+    
+    for (const file of req.files) {
+      console.log(`📄 Processing file: ${file.originalname}`);
+      console.log(`   - Path: ${file.path}`);
+      console.log(`   - Size: ${file.size} bytes`);
+      
+      // Read file into Buffer for database storage
+      let fileBuffer = null;
+      try {
+        if (fs.existsSync(file.path)) {
+          fileBuffer = fs.readFileSync(file.path);
+          console.log(`   ✅ File read successfully, Buffer size: ${fileBuffer.length} bytes`);
+        } else {
+          console.log(`   ⚠️  File not found at path: ${file.path}`);
+        }
+      } catch (readError) {
+        console.error(`   ❌ Error reading file: ${readError.message}`);
+      }
+      
+      const fileData = {
+        originalName: file.originalname,
+        fileName: file.filename,
+        filePath: file.path, // Keep for backward compatibility
+        fileSize: file.size,
+        fileType: path.extname(file.originalname).toLowerCase(),
+        fileData: fileBuffer, // Store file as binary in database
+        uploadedAt: new Date()
+      };
+      
+      files.push(fileData);
+      
+      // Delete file from filesystem after reading (only if successfully read)
+      if (fileBuffer && fs.existsSync(file.path)) {
+        try {
+          fs.unlinkSync(file.path);
+          console.log(`   🗑️  File deleted from filesystem: ${file.path}`);
+        } catch (deleteError) {
+          console.error(`   ⚠️  Error deleting file: ${deleteError.message}`);
+        }
+      }
+    }
 
     // Process Excel files to extract component data (optimized)
     let excelComponents = [];
     const excelFiles = files.filter(file => ['.xlsx', '.xls'].includes(file.fileType));
     
     // Process Excel files in parallel for better performance
+    // Note: Excel files need to be processed from Buffer now
     if (excelFiles.length > 0) {
       const excelPromises = excelFiles.map(async (excelFile) => {
         try {
-          const excelResult = await processExcelFile(excelFile.filePath);
+          // For Excel files, we need to write buffer to temp file for processing
+          const tempPath = path.join(__dirname, '..', 'uploads', 'temp', `excel-${Date.now()}-${Math.random().toString(36).substring(7)}.xlsx`);
+          const tempDir = path.dirname(tempPath);
+          if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
+          }
+          
+          fs.writeFileSync(tempPath, excelFile.fileData);
+          const excelResult = await processExcelFile(tempPath);
+          
+          // Delete temp file after processing
+          if (fs.existsSync(tempPath)) {
+            fs.unlinkSync(tempPath);
+          }
+          
           if (excelResult.success && excelResult.components.length > 0) {
             return excelResult.components;
           }
           return [];
         } catch (error) {
-          console.error(`Error processing Excel file ${excelFile.originalname}:`, error);
+          console.error(`Error processing Excel file ${excelFile.originalName}:`, error);
           return [];
         }
       });
@@ -907,36 +957,73 @@ router.get('/:id/files/:filename/download', authenticateToken, async (req, res) 
       });
     }
 
-    console.log('File found:', file.originalName, 'Path:', file.filePath);
+    console.log('File found:', file.originalName);
+    console.log('File has fileData (Buffer):', !!file.fileData);
+    console.log('File path (for backward compatibility):', file.filePath);
 
-    // Check if file exists on disk
-    if (!fs.existsSync(file.filePath)) {
-      console.log('File does not exist on disk:', file.filePath);
+    // Get file buffer - prioritize database storage, fallback to filesystem
+    let fileBuffer = null;
+    
+    // First, try to get from database (new format)
+    if (file.fileData) {
+      console.log('📦 Reading file from database (Buffer)');
+      // Handle different Buffer formats (direct Buffer, Mongoose Binary, $binary.base64)
+      if (Buffer.isBuffer(file.fileData)) {
+        fileBuffer = file.fileData;
+      } else if (file.fileData.buffer) {
+        fileBuffer = Buffer.from(file.fileData.buffer);
+      } else if (file.fileData.$binary && file.fileData.$binary.base64) {
+        try {
+          fileBuffer = Buffer.from(file.fileData.$binary.base64, 'base64');
+        } catch (e) {
+          console.error('Error decoding base64:', e);
+        }
+      } else if (typeof file.fileData === 'string') {
+        try {
+          fileBuffer = Buffer.from(file.fileData, 'base64');
+        } catch (e) {
+          console.error('Error decoding string as base64:', e);
+        }
+      }
+      
+      if (fileBuffer && fileBuffer.length > 0) {
+        console.log(`✅ File buffer loaded from database, size: ${fileBuffer.length} bytes`);
+      } else {
+        console.log('⚠️  Could not extract buffer from fileData, trying filesystem...');
+      }
+    }
+    
+    // Fallback to filesystem (old format - backward compatibility)
+    if (!fileBuffer && file.filePath && fs.existsSync(file.filePath)) {
+      console.log('📂 Reading file from filesystem (backward compatibility)');
+      try {
+        fileBuffer = fs.readFileSync(file.filePath);
+        console.log(`✅ File loaded from filesystem, size: ${fileBuffer.length} bytes`);
+      } catch (readError) {
+        console.error('❌ Error reading file from filesystem:', readError);
+      }
+    }
+    
+    // If still no buffer, return error
+    if (!fileBuffer || fileBuffer.length === 0) {
+      console.log('❌ File not found in database or filesystem');
       return res.status(404).json({
         success: false,
         message: 'File not found on server'
       });
     }
 
-    console.log('File exists, starting download...');
+    console.log('📤 Starting file download...');
 
-    // Set appropriate headers and send file
-    res.setHeader('Content-Disposition', `attachment; filename="${file.originalName}"`);
-    res.setHeader('Content-Type', 'application/octet-stream');
+    // Determine content type
+    const contentType = file.fileType || 'application/octet-stream';
     
-    res.download(file.filePath, file.originalName, (err) => {
-      if (err) {
-        console.error('File download error:', err);
-        if (!res.headersSent) {
-          res.status(500).json({
-            success: false,
-            message: 'Error downloading file'
-          });
-        }
-      } else {
-        console.log('File download completed successfully');
-      }
-    });
+    // Set appropriate headers and send file
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.originalName)}"`);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', fileBuffer.length);
+    
+    res.send(fileBuffer);
 
   } catch (error) {
     console.error('File download error:', error);
@@ -969,9 +1056,27 @@ router.post('/:id/upload', authenticateToken, upload.array('files', 20), handleM
       });
     }
 
+    console.log('💾 ===== BACKEND: UPLOADING ADDITIONAL FILES TO INQUIRY =====');
     const uploadedFiles = [];
     
     for (const file of req.files) {
+      console.log(`📄 Processing file: ${file.originalname}`);
+      console.log(`   - Path: ${file.path}`);
+      console.log(`   - Size: ${file.size} bytes`);
+      
+      // Read file into Buffer for database storage
+      let fileBuffer = null;
+      try {
+        if (fs.existsSync(file.path)) {
+          fileBuffer = fs.readFileSync(file.path);
+          console.log(`   ✅ File read successfully, Buffer size: ${fileBuffer.length} bytes`);
+        } else {
+          console.log(`   ⚠️  File not found at path: ${file.path}`);
+        }
+      } catch (readError) {
+        console.error(`   ❌ Error reading file: ${readError.message}`);
+      }
+      
       // Process Excel files to extract component data
       if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || 
           file.mimetype === 'application/vnd.ms-excel') {
@@ -990,13 +1095,24 @@ router.post('/:id/upload', authenticateToken, upload.array('files', 20), handleM
       const fileData = {
         originalName: file.originalname,
         fileName: file.filename,
-        filePath: file.path,
+        filePath: file.path, // Keep for backward compatibility
         fileSize: file.size,
         fileType: file.mimetype,
+        fileData: fileBuffer, // Store file as binary in database
         uploadedAt: new Date()
       };
 
       uploadedFiles.push(fileData);
+      
+      // Delete file from filesystem after reading (only if successfully read)
+      if (fileBuffer && fs.existsSync(file.path)) {
+        try {
+          fs.unlinkSync(file.path);
+          console.log(`   🗑️  File deleted from filesystem: ${file.path}`);
+        } catch (deleteError) {
+          console.error(`   ⚠️  Error deleting file: ${deleteError.message}`);
+        }
+      }
     }
 
     inquiry.files = [...inquiry.files, ...uploadedFiles];
@@ -1094,10 +1210,15 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       });
     }
 
-    // Delete uploaded files
+    // Delete uploaded files from filesystem (only if they exist - backward compatibility)
+    // Note: Files are now stored in database, but we still clean up old filesystem files
     inquiry.files.forEach(file => {
-      if (fs.existsSync(file.filePath)) {
-        fs.unlinkSync(file.filePath);
+      if (file.filePath && fs.existsSync(file.filePath)) {
+        try {
+          fs.unlinkSync(file.filePath);
+        } catch (error) {
+          console.error('Error deleting file from filesystem:', error);
+        }
       }
     });
 
@@ -1232,24 +1353,69 @@ router.get('/:id/files/download-all', authenticateToken, async (req, res) => {
       });
     }
 
-    // Filter out files that exist on disk
-    const existingFiles = inquiry.files.filter(file => {
-      const exists = fs.existsSync(file.filePath);
-      if (!exists) {
-        console.log('File not found on disk:', file.filePath);
+    // Get files with buffers - prioritize database, fallback to filesystem
+    const filesWithBuffers = [];
+    
+    for (const file of inquiry.files) {
+      let fileBuffer = null;
+      
+      // First, try to get from database (new format)
+      if (file.fileData) {
+        console.log(`📦 Reading file from database: ${file.originalName}`);
+        // Handle different Buffer formats
+        if (Buffer.isBuffer(file.fileData)) {
+          fileBuffer = file.fileData;
+        } else if (file.fileData.buffer) {
+          fileBuffer = Buffer.from(file.fileData.buffer);
+        } else if (file.fileData.$binary && file.fileData.$binary.base64) {
+          try {
+            fileBuffer = Buffer.from(file.fileData.$binary.base64, 'base64');
+          } catch (e) {
+            console.error('Error decoding base64:', e);
+          }
+        } else if (typeof file.fileData === 'string') {
+          try {
+            fileBuffer = Buffer.from(file.fileData, 'base64');
+          } catch (e) {
+            console.error('Error decoding string as base64:', e);
+          }
+        }
+        
+        if (fileBuffer && fileBuffer.length > 0) {
+          console.log(`✅ File buffer loaded from database: ${file.originalName}, size: ${fileBuffer.length} bytes`);
+        }
       }
-      return exists;
-    });
+      
+      // Fallback to filesystem (old format - backward compatibility)
+      if (!fileBuffer && file.filePath && fs.existsSync(file.filePath)) {
+        console.log(`📂 Reading file from filesystem: ${file.originalName}`);
+        try {
+          fileBuffer = fs.readFileSync(file.filePath);
+          console.log(`✅ File loaded from filesystem: ${file.originalName}, size: ${fileBuffer.length} bytes`);
+        } catch (readError) {
+          console.error(`❌ Error reading file from filesystem: ${readError.message}`);
+        }
+      }
+      
+      if (fileBuffer && fileBuffer.length > 0) {
+        filesWithBuffers.push({
+          ...file,
+          buffer: fileBuffer
+        });
+      } else {
+        console.log(`⚠️  Skipping file (no buffer available): ${file.originalName}`);
+      }
+    }
 
-    if (existingFiles.length === 0) {
-      console.log('No files exist on disk');
+    if (filesWithBuffers.length === 0) {
+      console.log('No files found in database or filesystem');
       return res.status(404).json({
         success: false,
         message: 'No files found on server'
       });
     }
 
-    console.log(`Creating ZIP with ${existingFiles.length} files...`);
+    console.log(`Creating ZIP with ${filesWithBuffers.length} files...`);
 
     // Set response headers
     const zipFilename = `${inquiry.inquiryNumber || inquiry._id}_files.zip`;
@@ -1290,10 +1456,10 @@ router.get('/:id/files/download-all', authenticateToken, async (req, res) => {
     // Pipe archive to response
     archive.pipe(res);
 
-    // Add files to archive
-    existingFiles.forEach((file, index) => {
-      console.log(`Adding file ${index + 1}/${existingFiles.length}: ${file.originalName}`);
-      archive.file(file.filePath, { name: file.originalName });
+    // Add files to archive from buffers
+    filesWithBuffers.forEach((file, index) => {
+      console.log(`Adding file ${index + 1}/${filesWithBuffers.length}: ${file.originalName} (${file.buffer.length} bytes)`);
+      archive.append(file.buffer, { name: file.originalName });
     });
 
     // Finalize the archive

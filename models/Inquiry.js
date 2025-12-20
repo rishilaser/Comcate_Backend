@@ -23,9 +23,10 @@ const inquirySchema = new mongoose.Schema({
   files: [{
     originalName: String,
     fileName: String,
-    filePath: String,
+    filePath: String, // Keep for backward compatibility
     fileSize: Number,
     fileType: String,
+    fileData: { type: Buffer, required: false }, // Store file as binary in database
     uploadedAt: {
       type: Date,
       default: Date.now
@@ -114,6 +115,18 @@ inquirySchema.pre('save', async function() {
 inquirySchema.methods.calculateTotal = function() {
   this.totalAmount = this.parts.reduce((total, part) => total + (part.price * part.quantity), 0);
   return this.totalAmount;
+};
+
+// Exclude fileData from JSON responses to prevent large payloads
+inquirySchema.methods.toJSON = function() {
+  const obj = this.toObject();
+  if (obj.files && Array.isArray(obj.files)) {
+    obj.files = obj.files.map(file => {
+      const { fileData, ...fileWithoutData } = file;
+      return fileWithoutData;
+    });
+  }
+  return obj;
 };
 
 module.exports = mongoose.model('Inquiry', inquirySchema);
