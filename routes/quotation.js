@@ -1218,11 +1218,12 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
     const { download } = req.query;
 
     // Try to find quotation by ID first (if id is a quotation ID)
-    let quotation = await Quotation.findById(id);
+    // Use lean() to get raw MongoDB document with quotationPdfData Buffer
+    let quotation = await Quotation.findById(id).lean();
     
     // If not found, try to find by inquiryId (if id is an inquiry ID)
     if (!quotation) {
-      quotation = await Quotation.findOne({ inquiryId: id });
+      quotation = await Quotation.findOne({ inquiryId: id }).lean();
     }
     
     if (!quotation) {
@@ -1231,6 +1232,12 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
         message: 'Quotation not found'
       });
     }
+    
+    console.log('📄 ===== BACKEND: QUOTATION PDF REQUEST =====');
+    console.log('   - Quotation ID:', quotation._id);
+    console.log('   - Has quotationPdfData:', !!quotation.quotationPdfData);
+    console.log('   - quotationPdfData type:', quotation.quotationPdfData ? typeof quotation.quotationPdfData : 'null');
+    console.log('   - quotationPdfData is Buffer:', quotation.quotationPdfData ? Buffer.isBuffer(quotation.quotationPdfData) : false);
 
     // Check access control: Admin/Back Office can view any PDF, customers can only view their own
     const isAdmin = ['admin', 'backoffice', 'subadmin'].includes(req.userRole);
@@ -1337,6 +1344,19 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
           console.error('❌ Error converting Mongoose Binary to Buffer:', binaryError);
           pdfBuffer = null;
         }
+      } else if (quotation.quotationPdfData.type === 'Buffer' && Array.isArray(quotation.quotationPdfData.data)) {
+        // Handle MongoDB export format: { type: 'Buffer', data: [1,2,3...] }
+        try {
+          pdfBuffer = Buffer.from(quotation.quotationPdfData.data);
+          pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+          console.log('📄 PDF found in database (new format: quotationPdfData as Buffer type array)');
+          console.log('   - Converted buffer size:', pdfBuffer.length, 'bytes');
+        } catch (bufferError) {
+          console.error('❌ Error creating buffer from array:', bufferError);
+          pdfBuffer = null;
+        }
+      } else {
+        console.log('⚠️  Unknown quotationPdfData format:', JSON.stringify(Object.keys(quotation.quotationPdfData || {})));
       }
     }
     // Try old format: quotationPdfBuffer (Buffer)
@@ -1461,10 +1481,12 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
         console.log('   - PDF Size:', pdfBuffer.length, 'bytes');
         console.log('   - PDF Header:', pdfHeader);
         
-        quotation.quotationPdfData = pdfBuffer;
-        quotation.quotationPdfFilename = pdfResult.fileName;
-        quotation.quotationPdf = pdfResult.fileName; // Keep for backward compatibility
-        await quotation.save();
+        // Update quotation with PDF data (since we used lean(), we need to use findByIdAndUpdate)
+        await Quotation.findByIdAndUpdate(quotation._id, {
+          quotationPdfData: pdfBuffer,
+          quotationPdfFilename: pdfResult.fileName,
+          quotationPdf: pdfResult.fileName // Keep for backward compatibility
+        });
         
         console.log('✅ PDF stored in database successfully');
         
