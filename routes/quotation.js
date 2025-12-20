@@ -1274,12 +1274,11 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       // Generate PDF
       const pdfResult = await pdfService.generateQuotationPDF(inquiry, pdfQuotationData);
       console.log('PDF generated successfully:', pdfResult.fileName);
+      console.log('PDF file path:', pdfResult.filePath);
+      console.log('PDF file size:', pdfResult.fileSize, 'bytes');
 
-      // Update quotation with PDF filename
-      quotation.quotationPdf = pdfResult.fileName;
-      await quotation.save();
-      
-      return pdfResult.fileName;
+      // Return the full pdfResult object (not just filename)
+      return pdfResult;
     };
 
     // Check if PDF data exists in database (support multiple formats)
@@ -1293,17 +1292,51 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
         // Direct Buffer format (normal MongoDB/Mongoose format)
         pdfBuffer = quotation.quotationPdfData;
         pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
-        console.log('PDF found in database (new format: quotationPdfData as Buffer)');
+        console.log('📄 PDF found in database (new format: quotationPdfData as Buffer)');
       } else if (quotation.quotationPdfData.$binary && quotation.quotationPdfData.$binary.base64) {
         // MongoDB export format with $binary.base64
-        pdfBuffer = Buffer.from(quotation.quotationPdfData.$binary.base64, 'base64');
-        pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
-        console.log('PDF found in database (new format: quotationPdfData as $binary.base64)');
+        try {
+          const base64String = quotation.quotationPdfData.$binary.base64;
+          pdfBuffer = Buffer.from(base64String, 'base64');
+          pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+          console.log('📄 PDF found in database (new format: quotationPdfData as $binary.base64)');
+          console.log('   - Base64 string length:', base64String.length);
+          console.log('   - Decoded buffer size:', pdfBuffer.length, 'bytes');
+          
+          // Validate decoded buffer
+          if (pdfBuffer.length === 0) {
+            console.error('❌ Decoded PDF buffer is empty!');
+            pdfBuffer = null; // Reset to null so it tries other methods
+          }
+        } catch (base64Error) {
+          console.error('❌ Error decoding base64 PDF:', base64Error);
+          pdfBuffer = null; // Reset to null so it tries other methods
+        }
       } else if (quotation.quotationPdfData.buffer && Buffer.isBuffer(quotation.quotationPdfData.buffer)) {
         // Mongoose Binary wrapper format
         pdfBuffer = quotation.quotationPdfData.buffer;
         pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
-        console.log('PDF found in database (new format: quotationPdfData as Binary wrapper)');
+        console.log('📄 PDF found in database (new format: quotationPdfData as Binary wrapper)');
+      } else if (quotation.quotationPdfData.subtype !== undefined || quotation.quotationPdfData.type !== undefined) {
+        // Mongoose Binary type (has subtype or type property)
+        try {
+          // Try to convert Mongoose Binary to Buffer
+          if (quotation.quotationPdfData.buffer) {
+            pdfBuffer = Buffer.from(quotation.quotationPdfData.buffer);
+          } else if (quotation.quotationPdfData.toString) {
+            // Try converting to string then to buffer (fallback)
+            const base64 = quotation.quotationPdfData.toString('base64');
+            pdfBuffer = Buffer.from(base64, 'base64');
+          } else {
+            pdfBuffer = Buffer.from(quotation.quotationPdfData);
+          }
+          pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+          console.log('📄 PDF found in database (new format: quotationPdfData as Mongoose Binary)');
+          console.log('   - Converted buffer size:', pdfBuffer.length, 'bytes');
+        } catch (binaryError) {
+          console.error('❌ Error converting Mongoose Binary to Buffer:', binaryError);
+          pdfBuffer = null;
+        }
       }
     }
     // Try old format: quotationPdfBuffer (Buffer)
@@ -1320,7 +1353,20 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
         pdfBuffer = Buffer.from(quotation.quotationPdf.data.buffer);
       } else if (quotation.quotationPdf.data && quotation.quotationPdf.data.$binary) {
         // Handle MongoDB export format with base64
-        pdfBuffer = Buffer.from(quotation.quotationPdf.data.$binary.base64, 'base64');
+        try {
+          const base64String = quotation.quotationPdf.data.$binary.base64;
+          pdfBuffer = Buffer.from(base64String, 'base64');
+          console.log('   - Base64 decoded, buffer size:', pdfBuffer.length, 'bytes');
+          
+          // Validate decoded buffer
+          if (pdfBuffer.length === 0) {
+            console.error('❌ Decoded PDF buffer is empty!');
+            pdfBuffer = null;
+          }
+        } catch (base64Error) {
+          console.error('❌ Error decoding base64 PDF:', base64Error);
+          pdfBuffer = null;
+        }
       }
       pdfFileName = quotation.quotationPdf.fileName || quotation.quotationPdf || pdfFileName;
       contentType = quotation.quotationPdf.contentType || 'application/pdf';
@@ -1329,7 +1375,33 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
 
     // If PDF data exists in database, use it
     if (pdfBuffer && Buffer.isBuffer(pdfBuffer)) {
-      console.log('Serving PDF from database, size:', pdfBuffer.length, 'bytes');
+      console.log('📄 ===== BACKEND: SERVING PDF FROM DATABASE =====');
+      console.log('   - PDF Buffer Size:', pdfBuffer.length, 'bytes');
+      console.log('   - PDF Buffer Size (MB):', (pdfBuffer.length / (1024 * 1024)).toFixed(2), 'MB');
+      
+      // Validate PDF buffer
+      if (pdfBuffer.length === 0) {
+        console.error('❌ PDF Buffer is empty!');
+        return res.status(500).json({
+          success: false,
+          message: 'PDF file is empty or corrupted'
+        });
+      }
+      
+      // Check PDF header to ensure it's a valid PDF
+      const pdfHeader = pdfBuffer.toString('ascii', 0, 4);
+      if (pdfHeader !== '%PDF') {
+        console.error('❌ Invalid PDF header detected:', pdfHeader);
+        console.error('   - First 20 bytes:', pdfBuffer.slice(0, 20).toString('hex'));
+        return res.status(500).json({
+          success: false,
+          message: 'Invalid PDF file format. PDF may be corrupted.',
+          detectedHeader: pdfHeader
+        });
+      }
+      
+      console.log('   ✅ Valid PDF header detected:', pdfHeader);
+      console.log('   - PDF Filename:', pdfFileName);
       
       // Set appropriate headers
       if (download === 'true') {
@@ -1337,10 +1409,12 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       } else {
         res.setHeader('Content-Disposition', `inline; filename="${pdfFileName}"`);
       }
-      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Length', pdfBuffer.length);
+      res.setHeader('Cache-Control', 'no-cache');
 
       // Send the PDF buffer
+      console.log('   ✅ Sending PDF buffer to client...');
       return res.send(pdfBuffer);
     }
 
@@ -1364,34 +1438,63 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
     }
 
     // If no PDF exists, try to generate one
-    console.log('No PDF found, attempting to generate PDF...');
+    console.log('📄 ===== BACKEND: NO PDF FOUND, GENERATING PDF =====');
     try {
       const pdfResult = await generatePDF();
       
       // Read the generated PDF and store in database
       if (fs.existsSync(pdfResult.filePath)) {
+        console.log('✅ Generated PDF file exists, reading into buffer...');
         pdfBuffer = fs.readFileSync(pdfResult.filePath);
+        
+        // Validate the generated PDF
+        if (!pdfBuffer || pdfBuffer.length === 0) {
+          throw new Error('Generated PDF file is empty');
+        }
+        
+        const pdfHeader = pdfBuffer.toString('ascii', 0, 4);
+        if (pdfHeader !== '%PDF') {
+          throw new Error(`Invalid PDF header: ${pdfHeader}. PDF generation may have failed.`);
+        }
+        
+        console.log('✅ Generated PDF is valid, storing in database...');
+        console.log('   - PDF Size:', pdfBuffer.length, 'bytes');
+        console.log('   - PDF Header:', pdfHeader);
+        
         quotation.quotationPdfData = pdfBuffer;
         quotation.quotationPdfFilename = pdfResult.fileName;
+        quotation.quotationPdf = pdfResult.fileName; // Keep for backward compatibility
         await quotation.save();
+        
+        console.log('✅ PDF stored in database successfully');
         
         // Delete the temporary file
         try {
           fs.unlinkSync(pdfResult.filePath);
+          console.log('🗑️  Temporary PDF file deleted:', pdfResult.filePath);
         } catch (unlinkError) {
-          console.warn('Could not delete temporary PDF file:', unlinkError);
+          console.warn('⚠️  Could not delete temporary PDF file:', unlinkError);
         }
         
         pdfFileName = pdfResult.fileName;
       } else {
-        throw new Error('Generated PDF file not found');
+        throw new Error(`Generated PDF file not found at: ${pdfResult.filePath}`);
       }
     } catch (pdfError) {
-      console.error('PDF generation failed:', pdfError);
+      console.error('❌ PDF generation failed:', pdfError);
       return res.status(500).json({
         success: false,
         message: 'Failed to generate PDF',
         error: pdfError.message
+      });
+    }
+
+    // Validate PDF buffer before sending
+    if (!pdfBuffer || !Buffer.isBuffer(pdfBuffer) || pdfBuffer.length === 0) {
+      console.error('❌ PDF buffer is invalid or empty');
+      return res.status(500).json({
+        success: false,
+        message: 'PDF buffer is invalid or empty'
       });
     }
 
@@ -1403,7 +1506,9 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
     }
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Length', pdfBuffer.length);
+    res.setHeader('Cache-Control', 'no-cache');
 
+    console.log('✅ Sending generated PDF to client, size:', pdfBuffer.length, 'bytes');
     // Send the PDF buffer
     res.send(pdfBuffer);
 
