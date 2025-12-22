@@ -19,17 +19,11 @@ app.timeout = 300000; // 5 minutes
 app.keepAliveTimeout = 300000; // 5 minutes
 app.headersTimeout = 300000; // 5 minutes
 
-// Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-// Ensure inquiries subdirectory exists
-const inquiriesDir = path.join(uploadsDir, 'inquiries');
-if (!fs.existsSync(inquiriesDir)) {
-  fs.mkdirSync(inquiriesDir, { recursive: true });
-}
+// ✅ VPS-Ready: Ensure uploads directory exists using centralized config
+const { ensureUploadsDirectories, getUploadsBasePath, verifyUploadsPermissions } = require('./config/uploadConfig');
+const uploadsDir = ensureUploadsDirectories();
+verifyUploadsPermissions();
+console.log('📁 Uploads base path:', uploadsDir);
 
 // Security middleware with CSP configuration
 app.use(helmet({
@@ -95,14 +89,25 @@ if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
 app.use(express.json({ limit: '500mb' })); // Increased to handle multiple large PDFs
 app.use(express.urlencoded({ extended: true, limit: '500mb' })); // Increased to handle multiple large PDFs
 
-// File upload middleware - Use absolute paths with proper headers
+// ✅ VPS-Ready: Static file serving with proper headers
 app.use('/uploads', (req, res, next) => {
   // Set proper CORS headers for file access
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
   res.setHeader('Content-Type', 'application/pdf');
+  // Cache control for better performance
+  res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
   next();
-}, express.static(path.join(__dirname, 'uploads')));
+}, express.static(getUploadsBasePath(), {
+  // Enable dotfiles (hidden files) if needed
+  dotfiles: 'ignore',
+  // Set proper index
+  index: false,
+  // Enable ETag for caching
+  etag: true,
+  // Enable last modified
+  lastModified: true
+}));
 
 app.use('/test-files', express.static(path.join(__dirname, 'test-files')));
 

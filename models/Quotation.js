@@ -46,16 +46,21 @@ const quotationSchema = new mongoose.Schema({
   quotationPdf: {
     type: String,
     required: false
-  },
-  quotationPdfData: {
-    type: Buffer,
-    required: false
+    // ✅ BEST PRACTICE: Store filename only. File is stored on disk at /uploads/quotations/
+    // Access file via: /uploads/quotations/{quotationPdf}
   },
   quotationPdfFilename: {
     type: String,
     required: false
+    // Original filename for display purposes
   },
-  // Support old format fields for backward compatibility
+  // ⚠️ DEPRECATED: These fields store PDF as Buffer in database (NOT RECOMMENDED)
+  // Kept for backward compatibility with existing records
+  // New uploads should NOT use these fields - files are stored on disk instead
+  quotationPdfData: {
+    type: Buffer,
+    required: false
+  },
   quotationPdfBuffer: {
     type: Buffer,
     required: false
