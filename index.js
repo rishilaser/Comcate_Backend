@@ -52,24 +52,21 @@ const corsOptions = {
     const allowedOrigins = [
       'http://localhost:3000', // Development
       'http://localhost:3001', // Alternative development port
-      'https://247cutbend.in', // Production (non-www)
-      'https://www.247cutbend.in', // Production (www)
-      'http://247cutbend.in', // HTTP (non-www)
-      'http://www.247cutbend.in', // HTTP (www)
+      // 'http://127.0.0.1:3000', // Alternative localhost
+      // 'http://127.0.0.1:3001', // Alternative localhost port
+      // 'https://komacut-frontend.onrender.com', // Production frontend
+      // 'https://comcat-frontend.onrender.com', // Alternative frontend URL
+      // 'https://comcat-frontends.onrender.com', // Your actual frontend URL
       process.env.CLIENT_URL, // From environment variable
     ].filter(Boolean); // Remove undefined values
     
     // Check if origin matches any allowed origin
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
-    } else if (origin.includes('247cutbend.in')) {
-      // Allow all 247cutbend.in subdomains
-      callback(null, true);
     } else if (origin.includes('.onrender.com') || origin.includes('.netlify.app') || origin.includes('.vercel.app')) {
       // Allow all Render, Netlify, and Vercel subdomains
       callback(null, true);
     } else {
-      console.log('CORS: Blocked origin:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -84,37 +81,10 @@ if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
     origin: true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-    exposedHeaders: ['Content-Disposition', 'Content-Length']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
   }));
 } else {
-  // Production: Use corsOptions but also allow both www and non-www versions
-  app.use(cors({
-    ...corsOptions,
-    origin: function (origin, callback) {
-      // Allow requests with no origin
-      if (!origin) return callback(null, true);
-      
-      const allowedOrigins = [
-        'https://247cutbend.in',
-        'https://www.247cutbend.in',
-        'http://247cutbend.in',
-        'http://www.247cutbend.in',
-        process.env.CLIENT_URL
-      ].filter(Boolean);
-      
-      // Check if origin matches
-      if (allowedOrigins.some(allowed => origin === allowed || origin.includes(allowed))) {
-        callback(null, true);
-      } else if (origin.includes('.onrender.com') || origin.includes('.netlify.app') || origin.includes('.vercel.app')) {
-        callback(null, true);
-      } else {
-        console.log('CORS: Blocked origin:', origin);
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
-    exposedHeaders: ['Content-Disposition', 'Content-Length']
-  }));
+  app.use(cors(corsOptions));
 }
 app.use(express.json({ limit: '500mb' })); // Increased to handle multiple large PDFs
 app.use(express.urlencoded({ extended: true, limit: '500mb' })); // Increased to handle multiple large PDFs

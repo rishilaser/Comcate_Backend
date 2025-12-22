@@ -1159,58 +1159,28 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       }
 
       // Prepare quotation data for PDF generation
-      // Handle both items and parts (for backward compatibility)
-      let quotationItems = [];
-      if (quotation.items && quotation.items.length > 0) {
-        quotationItems = quotation.items;
-      } else if (quotation.parts && quotation.parts.length > 0) {
-        quotationItems = quotation.parts;
-      }
-      
       const pdfQuotationData = {
-        parts: quotationItems.length > 0 
-          ? quotationItems.map(item => ({
-              partRef: item.partRef || item.partName || '',
+        parts: quotation.items && quotation.items.length > 0 
+          ? quotation.items.map(item => ({
+              partRef: item.partRef || '',
               material: item.material || 'Zintec',
               thickness: item.thickness || '1.5',
               quantity: item.quantity || 1,
-              price: item.unitPrice || item.price || 0,
-              remarks: item.remark || item.remarks || ''
+              price: item.unitPrice || 0,
+              remarks: item.remark || ''
             }))
           : [],
         totalAmount: quotation.totalAmount || 0,
-        currency: quotation.currency || 'USD',
+        currency: 'USD',
         validUntil: quotation.validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         terms: quotation.terms || 'Standard manufacturing terms apply. Payment required before production begins.'
       };
-      
-      // If no parts/items, use inquiry parts as fallback
-      if (pdfQuotationData.parts.length === 0 && inquiry.parts && inquiry.parts.length > 0) {
-        pdfQuotationData.parts = inquiry.parts.map(part => ({
-          partRef: part.partRef || '',
-          material: part.material || 'Zintec',
-          thickness: part.thickness || '1.5',
-          quantity: part.quantity || 1,
-          price: part.price || 0,
-          remarks: part.remarks || ''
-        }));
-      }
 
-      // Validate that we have parts to generate PDF
-      if (!pdfQuotationData.parts || pdfQuotationData.parts.length === 0) {
-        console.warn('⚠️  No parts found in quotation or inquiry. Generating PDF with empty parts list.');
-      }
-      
       // Generate PDF
-      console.log('📄 Starting PDF generation...');
-      console.log('   - Inquiry Number:', inquiry.inquiryNumber);
-      console.log('   - Parts Count:', pdfQuotationData.parts.length);
-      console.log('   - Total Amount:', pdfQuotationData.totalAmount);
-      
       const pdfResult = await pdfService.generateQuotationPDF(inquiry, pdfQuotationData);
-      console.log('✅ PDF generated successfully:', pdfResult.fileName);
-      console.log('   - PDF file path:', pdfResult.filePath);
-      console.log('   - PDF file size:', pdfResult.fileSize, 'bytes');
+      console.log('PDF generated successfully:', pdfResult.fileName);
+      console.log('PDF file path:', pdfResult.filePath);
+      console.log('PDF file size:', pdfResult.fileSize, 'bytes');
 
       // Return the full pdfResult object (not just filename)
       return pdfResult;
@@ -1218,7 +1188,7 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
 
     // Check if PDF data exists in database (support multiple formats)
     let pdfBuffer = null;
-    let pdfFileName = `quotation_${quotation.quotationNumber || quotation._id || 'unknown'}.pdf`;
+    let pdfFileName = `quotation_${quotation.quotationNumber}.pdf`;
     let contentType = 'application/pdf';
 
     // Try new format first: quotationPdfData (Buffer)
@@ -1438,12 +1408,10 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       }
     } catch (pdfError) {
       console.error('❌ PDF generation failed:', pdfError);
-      console.error('❌ PDF generation error stack:', pdfError.stack);
       return res.status(500).json({
         success: false,
-        message: `Failed to generate PDF: ${pdfError.message || 'Unknown error'}`,
-        error: pdfError.message,
-        details: process.env.NODE_ENV === 'development' ? pdfError.stack : undefined
+        message: 'Failed to generate PDF',
+        error: pdfError.message
       });
     }
 
