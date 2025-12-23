@@ -479,14 +479,6 @@ const sendInquiryNotification = async (inquiry) => {
                 // </div>
               </div>
             </div>
-            
-            <!-- Action Button -->
-            <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/backoffice" 
-                 style="background: linear-gradient(135deg, #FF9800 0%, #F57C00 100%); color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 15px rgba(255, 152, 0, 0.3); display: inline-block;">
-                🔍 Review Inquiry
-              </a>
-            </div>
           </div>
           
           <!-- Footer -->
