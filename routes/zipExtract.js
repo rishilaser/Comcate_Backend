@@ -9,7 +9,7 @@ const router = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB limit for ZIP files
+    fileSize: 500 * 1024 * 1024 // 500MB limit for ZIP files
   },
   fileFilter: (req, file, cb) => {
     if (file.mimetype === 'application/zip' || file.originalname.toLowerCase().endsWith('.zip')) {

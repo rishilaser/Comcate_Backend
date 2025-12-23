@@ -28,7 +28,7 @@ const errorHandler = (err, req, res, next) => {
     // Handle Multer file upload errors
     switch (err.code) {
       case 'LIMIT_FILE_SIZE':
-        error.message = `File too large. Maximum file size is 100MB. File "${err.field}" exceeded the limit.`;
+        error.message = `File too large. Maximum file size is 500MB. File "${err.field}" exceeded the limit.`;
         error.status = 413;
         break;
       case 'LIMIT_FILE_COUNT':

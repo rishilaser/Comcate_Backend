@@ -35,7 +35,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
+    fileSize: 500 * 1024 * 1024 // 500MB limit
   },
   fileFilter: (req, file, cb) => {
     if (file.mimetype === 'application/pdf') {
@@ -1444,6 +1444,222 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       success: false,
       message: 'Server error',
       error: error.message
+    });
+  }
+});
+
+// Download quotation PDF (same logic as inquiry file download)
+router.get('/:id/pdf/download', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    console.log('=== QUOTATION PDF DOWNLOAD REQUEST ===');
+    console.log('Quotation ID:', id);
+    console.log('User ID:', req.userId);
+    console.log('User role:', req.userRole);
+    
+    // Check if user is admin/backoffice - they can access any quotation
+    const isAdmin = ['admin', 'backoffice', 'subadmin'].includes(req.userRole);
+    console.log('Is admin user:', isAdmin);
+    
+    // Query quotation with quotationPdfData field included (bypass toJSON using lean)
+    let quotation;
+    if (isAdmin) {
+      // Admin users can access any quotation - use lean to get raw document with quotationPdfData
+      quotation = await Quotation.findOne({
+        _id: id
+      }).lean();
+    } else {
+      // Regular users can only access their own quotations
+      // First find the quotation
+      quotation = await Quotation.findOne({
+        _id: id
+      }).lean();
+      
+      if (quotation) {
+        // Verify the quotation belongs to the user
+        const inquiry = await Inquiry.findById(quotation.inquiryId);
+        if (!inquiry || inquiry.customer.toString() !== req.userId.toString()) {
+          console.log('Quotation exists but user does not have access. Inquiry customer:', inquiry?.customer);
+          quotation = null;
+        }
+      }
+    }
+    
+    // If not found by ID, try to find by inquiryId (if id is an inquiry ID)
+    if (!quotation) {
+      quotation = await Quotation.findOne({ inquiryId: id }).lean();
+      
+      if (quotation && !isAdmin) {
+        // Verify the quotation belongs to the user
+        const inquiry = await Inquiry.findById(quotation.inquiryId);
+        if (!inquiry || inquiry.customer.toString() !== req.userId.toString()) {
+          quotation = null;
+        }
+      }
+    }
+
+    if (!quotation) {
+      console.log('Quotation not found. ID:', id, 'User ID:', req.userId, 'Is Admin:', isAdmin);
+      return res.status(404).json({
+        success: false,
+        message: 'Quotation not found'
+      });
+    }
+
+    console.log('Quotation found:', quotation.quotationNumber);
+    console.log('Has quotationPdf:', !!quotation.quotationPdf);
+    console.log('Has quotationPdfData:', !!quotation.quotationPdfData);
+    console.log('quotationPdfData type:', quotation.quotationPdfData ? typeof quotation.quotationPdfData : 'null');
+    console.log('quotationPdfData is Buffer:', quotation.quotationPdfData ? Buffer.isBuffer(quotation.quotationPdfData) : false);
+
+    // Get PDF buffer - prioritize database storage, fallback to filesystem
+    let pdfBuffer = null;
+    let pdfFileName = `quotation_${quotation.quotationNumber || quotation._id}.pdf`;
+    let contentType = 'application/pdf';
+    
+    // First, try to get from database (new format: quotationPdfData)
+    if (quotation.quotationPdfData) {
+      console.log('📦 Reading PDF from database (quotationPdfData)');
+      console.log('   - quotationPdfData type:', typeof quotation.quotationPdfData);
+      console.log('   - quotationPdfData constructor:', quotation.quotationPdfData?.constructor?.name);
+      console.log('   - Is Buffer:', Buffer.isBuffer(quotation.quotationPdfData));
+      
+      // Handle different Buffer formats (direct Buffer, Mongoose Binary, $binary.base64)
+      if (Buffer.isBuffer(quotation.quotationPdfData)) {
+        pdfBuffer = quotation.quotationPdfData;
+        pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+        console.log('   ✅ Direct Buffer detected');
+      } else if (quotation.quotationPdfData.buffer && Buffer.isBuffer(quotation.quotationPdfData.buffer)) {
+        pdfBuffer = quotation.quotationPdfData.buffer;
+        pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+        console.log('   ✅ Buffer from .buffer property');
+      } else if (quotation.quotationPdfData.$binary && quotation.quotationPdfData.$binary.base64) {
+        try {
+          pdfBuffer = Buffer.from(quotation.quotationPdfData.$binary.base64, 'base64');
+          pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+          console.log('   ✅ Decoded from $binary.base64');
+        } catch (e) {
+          console.error('   ❌ Error decoding base64:', e);
+        }
+      } else if (typeof quotation.quotationPdfData === 'string') {
+        try {
+          pdfBuffer = Buffer.from(quotation.quotationPdfData, 'base64');
+          pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+          console.log('   ✅ Decoded from string base64');
+        } catch (e) {
+          console.error('   ❌ Error decoding string as base64:', e);
+        }
+      } else if (quotation.quotationPdfData.type === 'Buffer' && Array.isArray(quotation.quotationPdfData.data)) {
+        // Handle MongoDB export format: { type: 'Buffer', data: [1,2,3...] }
+        try {
+          pdfBuffer = Buffer.from(quotation.quotationPdfData.data);
+          pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+          console.log('   ✅ Decoded from Buffer type array');
+        } catch (e) {
+          console.error('   ❌ Error creating buffer from array:', e);
+        }
+      } else {
+        console.log('   ⚠️  Unknown quotationPdfData format:', JSON.stringify(Object.keys(quotation.quotationPdfData || {})));
+      }
+      
+      if (pdfBuffer && pdfBuffer.length > 0) {
+        console.log(`✅ PDF buffer loaded from database, size: ${pdfBuffer.length} bytes`);
+      } else {
+        console.log('⚠️  Could not extract buffer from quotationPdfData, trying filesystem...');
+      }
+    }
+    // Try old format: quotationPdfBuffer
+    else if (quotation.quotationPdfBuffer && Buffer.isBuffer(quotation.quotationPdfBuffer)) {
+      console.log('📦 Reading PDF from database (quotationPdfBuffer - old format)');
+      pdfBuffer = quotation.quotationPdfBuffer;
+      pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+      contentType = quotation.quotationPdfContentType || 'application/pdf';
+      console.log(`✅ PDF buffer loaded from database (old format), size: ${pdfBuffer.length} bytes`);
+    }
+    // Try old format: quotationPdf as object
+    else if (quotation.quotationPdf && typeof quotation.quotationPdf === 'object' && quotation.quotationPdf.data) {
+      console.log('📦 Reading PDF from database (quotationPdf object - old format)');
+      // Handle MongoDB Binary format
+      if (quotation.quotationPdf.data && quotation.quotationPdf.data.buffer) {
+        pdfBuffer = Buffer.from(quotation.quotationPdf.data.buffer);
+      } else if (quotation.quotationPdf.data && quotation.quotationPdf.data.$binary) {
+        // Handle MongoDB export format with base64
+        try {
+          const base64String = quotation.quotationPdf.data.$binary.base64;
+          pdfBuffer = Buffer.from(base64String, 'base64');
+        } catch (base64Error) {
+          console.error('❌ Error decoding base64 PDF:', base64Error);
+        }
+      }
+      pdfFileName = quotation.quotationPdf.fileName || quotation.quotationPdf || pdfFileName;
+      contentType = quotation.quotationPdf.contentType || 'application/pdf';
+      if (pdfBuffer && pdfBuffer.length > 0) {
+        console.log(`✅ PDF buffer loaded from database (old format), size: ${pdfBuffer.length} bytes`);
+      }
+    } else {
+      console.log('⚠️  No quotationPdfData in database, trying filesystem...');
+    }
+    
+    // Fallback to filesystem (old format - backward compatibility)
+    if (!pdfBuffer && quotation.quotationPdf) {
+      const pdfPath = path.join(getQuotationsPath(), quotation.quotationPdf);
+      if (fs.existsSync(pdfPath)) {
+        console.log('📂 Reading PDF from filesystem (backward compatibility)');
+        try {
+          pdfBuffer = fs.readFileSync(pdfPath);
+          pdfFileName = quotation.quotationPdfFilename || quotation.quotationPdf || pdfFileName;
+          console.log(`✅ PDF loaded from filesystem, size: ${pdfBuffer.length} bytes`);
+        } catch (readError) {
+          console.error('❌ Error reading PDF from filesystem:', readError);
+        }
+      }
+    }
+    
+    // If still no buffer, return error
+    if (!pdfBuffer || pdfBuffer.length === 0) {
+      console.log('❌ PDF not found in database or filesystem');
+      return res.status(404).json({
+        success: false,
+        message: 'PDF not found on server'
+      });
+    }
+
+    console.log('📤 Starting PDF download...');
+
+    // Validate PDF buffer
+    if (pdfBuffer.length === 0) {
+      console.error('❌ PDF Buffer is empty!');
+      return res.status(500).json({
+        success: false,
+        message: 'PDF file is empty or corrupted'
+      });
+    }
+    
+    // Check PDF header to ensure it's a valid PDF
+    const pdfHeader = pdfBuffer.toString('ascii', 0, 4);
+    if (pdfHeader !== '%PDF') {
+      console.error('❌ Invalid PDF header detected:', pdfHeader);
+      return res.status(500).json({
+        success: false,
+        message: 'Invalid PDF file format. PDF may be corrupted.',
+        detectedHeader: pdfHeader
+      });
+    }
+
+    // Set appropriate headers and send file (force download)
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(pdfFileName)}"`);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+    
+    res.send(pdfBuffer);
+
+  } catch (error) {
+    console.error('Quotation PDF download error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
     });
   }
 });
