@@ -52,6 +52,8 @@ const corsOptions = {
     const allowedOrigins = [
       'http://localhost:3000', // Development
       'http://localhost:3001', // Alternative development port
+      'https://247cutbend.in', // Production frontend (without www)
+      'https://www.247cutbend.in', // Production frontend (with www)
       // 'http://127.0.0.1:3000', // Alternative localhost
       // 'http://127.0.0.1:3001', // Alternative localhost port
       // 'https://komacut-frontend.onrender.com', // Production frontend
@@ -63,8 +65,8 @@ const corsOptions = {
     // Check if origin matches any allowed origin
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
-    } else if (origin.includes('.onrender.com') || origin.includes('.netlify.app') || origin.includes('.vercel.app')) {
-      // Allow all Render, Netlify, and Vercel subdomains
+    } else if (origin.includes('247cutbend.in') || origin.includes('.onrender.com') || origin.includes('.netlify.app') || origin.includes('.vercel.app')) {
+      // Allow all 247cutbend.in subdomains, Render, Netlify, and Vercel subdomains
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
