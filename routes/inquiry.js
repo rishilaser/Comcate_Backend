@@ -61,8 +61,8 @@ const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 500 * 1024 * 1024, // 500MB limit per file
-    files: 20, // Maximum 20 files (increased from 10)
+    fileSize: 500 * 1024 * 1024, // 500MB limit per file (PDFs have 5MB limit in validation)
+    files: 100, // Maximum 100 files (PDF limit)
     fieldSize: 10 * 1024 * 1024 // 10MB for text fields
   }
 });
@@ -80,9 +80,9 @@ const handleMulterErrors = (error, req, res, next) => {
     } else if (error.code === 'LIMIT_FILE_COUNT') {
       return res.status(413).json({
         success: false,
-        message: 'Too many files. Maximum 20 files allowed.',
+        message: 'Too many files. Maximum 100 files allowed.',
         error: 'TOO_MANY_FILES',
-        maxFiles: 20
+        maxFiles: 100
       });
     } else if (error.code === 'LIMIT_FIELD_COUNT') {
       return res.status(413).json({
@@ -102,7 +102,7 @@ const handleMulterErrors = (error, req, res, next) => {
 };
 
 // Test endpoint to debug data format
-router.post('/test', upload.array('files', 20), handleMulterErrors, (req, res) => {
+router.post('/test', upload.array('files', 100), handleMulterErrors, (req, res) => {
   res.json({
     success: true,
     message: 'Test endpoint working',
@@ -163,7 +163,7 @@ router.post('/test-model', async (req, res) => {
 });
 
 // Debug endpoint - no authentication required
-router.post('/debug', upload.array('files', 20), handleMulterErrors, (req, res) => {
+router.post('/debug', upload.array('files', 100), handleMulterErrors, (req, res) => {
   try {
     // Validate required fields
     const { parts, deliveryAddress, specialInstructions } = req.body;
@@ -281,7 +281,7 @@ router.post('/debug', upload.array('files', 20), handleMulterErrors, (req, res) 
 });
 
 // Create new inquiry
-router.post('/', authenticateToken, upload.array('files', 20), handleMulterErrors, [
+router.post('/', authenticateToken, upload.array('files', 100), handleMulterErrors, [
   body('parts').notEmpty().withMessage('Parts data is required'),
   body('deliveryAddress').notEmpty().withMessage('Delivery address is required'),
   body('specialInstructions').optional()
@@ -321,82 +321,32 @@ router.post('/', authenticateToken, upload.array('files', 20), handleMulterError
     }
     const files = [];
     
-    // Process files in parallel for better performance
+    // OPTIMIZED: Process files quickly - store PDFs temporarily, upload to Cloudinary async
     const filePromises = req.files.map(async (file) => {
       const fileType = path.extname(file.originalname).toLowerCase();
       const isPdf = fileType === '.pdf';
       
-      // Only log in development
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`📄 Processing file: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(2)} MB) - ${isPdf ? 'PDF → Cloudinary' : 'Other → MongoDB'}`);
+      // Validate PDF file size (5MB limit)
+      if (isPdf && file.size > 5 * 1024 * 1024) {
+        throw new Error(`PDF file "${file.originalname}" exceeds 5MB limit. File size: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
       }
       
-      // If PDF, upload to Cloudinary
+      // If PDF, store file path temporarily (upload to Cloudinary async after response)
       if (isPdf) {
-        try {
-          // Read file buffer
-          let fileBuffer = null;
-          if (fs.existsSync(file.path)) {
-            fileBuffer = fs.readFileSync(file.path);
-          }
-          
-          if (!fileBuffer) {
-            throw new Error('Failed to read PDF file');
-          }
-          
-          // Upload to Cloudinary
-          const cloudinaryResult = await uploadPdfToCloudinary(
-            fileBuffer,
-            file.originalname,
-            'inquiries/pdfs'
-          );
-          
-          // Delete file from filesystem after upload
-          if (fs.existsSync(file.path)) {
-            try {
-              fs.unlinkSync(file.path);
-            } catch (deleteError) {
-              if (process.env.NODE_ENV === 'development') {
-                console.error(`   ⚠️  Error deleting file: ${deleteError.message}`);
-              }
-            }
-          }
-          
-          // Return file data with Cloudinary URL (no fileData buffer)
-          return {
-            originalName: file.originalname,
-            fileName: file.filename,
-            filePath: cloudinaryResult.url, // Store Cloudinary URL instead of local path
-            fileSize: file.size,
-            fileType: fileType,
-            cloudinaryUrl: cloudinaryResult.url, // Cloudinary URL
-            cloudinaryPublicId: cloudinaryResult.public_id, // For future deletion
-            fileData: null, // Don't store PDF in MongoDB
-            uploadedAt: new Date()
-          };
-          
-        } catch (cloudinaryError) {
-          console.error(`❌ Error uploading PDF to Cloudinary: ${cloudinaryError.message}`);
-          // Fallback: store in MongoDB if Cloudinary fails
-          let fileBuffer = null;
-          try {
-            if (fs.existsSync(file.path)) {
-              fileBuffer = fs.readFileSync(file.path);
-            }
-          } catch (readError) {
-            console.error(`   ❌ Error reading file: ${readError.message}`);
-          }
-          
-          return {
-            originalName: file.originalname,
-            fileName: file.filename,
-            filePath: file.path,
-            fileSize: file.size,
-            fileType: fileType,
-            fileData: fileBuffer,
-            uploadedAt: new Date()
-          };
-        }
+        // Store file path temporarily - will upload to Cloudinary async
+        return {
+          originalName: file.originalname,
+          fileName: file.filename,
+          filePath: file.path, // Temporary path - will be replaced with Cloudinary URL
+          fileSize: file.size,
+          fileType: fileType,
+          cloudinaryUrl: null, // Will be set async
+          cloudinaryPublicId: null, // Will be set async
+          fileData: null, // Don't store PDF in MongoDB
+          uploadedAt: new Date(),
+          _tempPath: file.path, // Mark for async Cloudinary upload
+          _isPdf: true
+        };
       } else {
         // For non-PDF files, keep existing behavior (store in MongoDB)
         let fileBuffer = null;
@@ -439,43 +389,9 @@ router.post('/', authenticateToken, upload.array('files', 20), handleMulterError
     const processedFiles = await Promise.all(filePromises);
     files.push(...processedFiles);
 
-    // Process Excel files to extract component data (optimized)
-    let excelComponents = [];
+    // OPTIMIZED: Excel processing moved to async (after response) for faster API
     const excelFiles = files.filter(file => ['.xlsx', '.xls'].includes(file.fileType));
-    
-    // Process Excel files in parallel for better performance
-    // Note: Excel files need to be processed from Buffer now
-    if (excelFiles.length > 0) {
-      const excelPromises = excelFiles.map(async (excelFile) => {
-        try {
-          // For Excel files, we need to write buffer to temp file for processing
-          const tempPath = path.join(__dirname, '..', 'uploads', 'temp', `excel-${Date.now()}-${Math.random().toString(36).substring(7)}.xlsx`);
-          const tempDir = path.dirname(tempPath);
-          if (!fs.existsSync(tempDir)) {
-            fs.mkdirSync(tempDir, { recursive: true });
-          }
-          
-          fs.writeFileSync(tempPath, excelFile.fileData);
-          const excelResult = await processExcelFile(tempPath);
-          
-          // Delete temp file after processing
-          if (fs.existsSync(tempPath)) {
-            fs.unlinkSync(tempPath);
-          }
-          
-          if (excelResult.success && excelResult.components.length > 0) {
-            return excelResult.components;
-          }
-          return [];
-        } catch (error) {
-          console.error(`Error processing Excel file ${excelFile.originalName}:`, error);
-          return [];
-        }
-      });
-      
-      const excelResults = await Promise.all(excelPromises);
-      excelComponents = excelResults.flat();
-    }
+    // Note: Excel components will be processed async and merged later
 
     // Process parts data - handle both string and object formats
     let processedParts;
@@ -513,32 +429,8 @@ router.post('/', authenticateToken, upload.array('files', 20), handleMulterError
         remarks: part.remarks ? part.remarks.toString().trim() : ''
       }));
 
-      // Merge Excel components with form parts if available
-      if (excelComponents.length > 0) {
-        
-        // Create a map of existing parts to avoid duplicates
-        const existingPartsMap = new Map();
-        processedParts.forEach(part => {
-          const key = `${part.material}-${part.thickness}-${part.grade || ''}`;
-          existingPartsMap.set(key, part);
-        });
-        
-        // Add Excel components that don't conflict
-        excelComponents.forEach(excelPart => {
-          const key = `${excelPart.material}-${excelPart.thickness}-${excelPart.grade || ''}`;
-          if (!existingPartsMap.has(key)) {
-            processedParts.push({
-              ...excelPart,
-              material: excelPart.material.toString().trim(),
-              thickness: excelPart.thickness.toString().trim(),
-              quantity: parseInt(excelPart.quantity) || 1,
-              remarks: excelPart.remarks ? excelPart.remarks.toString().trim() : '',
-              source: 'excel'
-            });
-          }
-        });
-        
-      }
+      // Note: Excel components processing moved to async (after response)
+      // Form parts are used immediately for faster response
 
     } catch (parseError) {
       console.error('Parts parsing error:', parseError);
@@ -574,22 +466,25 @@ router.post('/', authenticateToken, upload.array('files', 20), handleMulterError
     }
 
 
-    // Create inquiry
+    // OPTIMIZED: Create inquiry with cleaned files (remove temp properties)
+    const cleanedFiles = files.map(f => {
+      const { _tempPath, _isPdf, ...fileData } = f;
+      return fileData;
+    });
+
     const inquiry = new Inquiry({
       customer: req.userId,
-      files,
+      files: cleanedFiles,
       parts: processedParts,
       deliveryAddress: processedDeliveryAddress,
       specialInstructions: specialInstructions || '',
       expectedDeliveryDate: expectedDeliveryDate ? new Date(expectedDeliveryDate) : null
     });
 
+    // Save inquiry quickly (without waiting for Cloudinary)
     await inquiry.save();
 
-    // Populate customer data for notification
-    await inquiry.populate('customer', 'firstName lastName email companyName phoneNumber');
-
-    // Send response immediately to user
+    // Send response immediately to user (before any async operations)
     res.status(201).json({
       success: true,
       message: 'Inquiry created successfully',
@@ -601,60 +496,145 @@ router.post('/', authenticateToken, upload.array('files', 20), handleMulterError
       }
     });
 
-    // Send notifications asynchronously (don't block response)
-    setImmediate(async () => {
-      try {
-        if (process.env.NODE_ENV === 'development') {
-          console.log('=== ATTEMPTING TO SEND INQUIRY EMAIL NOTIFICATION ===');
-        }
-        
-        // Send email notification to back office
-        await sendInquiryNotification(inquiry);
-        if (process.env.NODE_ENV === 'development') {
-          console.log('✅ Inquiry email notification sent successfully');
-        }
-      } catch (emailError) {
-        // Always log errors, but keep it minimal in production
-        console.error('❌ Inquiry notification failed:', emailError.message);
-        if (process.env.NODE_ENV === 'development') {
-          console.error('Stack trace:', emailError.stack);
-        }
-      }
-
-      // Create notification for all back office users
-      try {
-        const backOfficeUsers = await User.find({ role: { $in: ['admin', 'backoffice'] } });
-        
-        for (const user of backOfficeUsers) {
-          await Notification.createNotification({
-            title: 'New Inquiry Received',
-            message: `Inquiry ${inquiry.inquiryNumber} received from ${inquiry.customer.firstName} ${inquiry.customer.lastName}. ${inquiry.parts.length} parts, ${inquiry.files.length} files. Please review.`,
-            type: 'info',
-            userId: user._id,
-            relatedEntity: {
-              type: 'inquiry',
-              entityId: inquiry._id
-            },
-            metadata: {
-              inquiryNumber: inquiry.inquiryNumber,
-              customerName: `${inquiry.customer.firstName} ${inquiry.customer.lastName}`,
-              customerEmail: inquiry.customer.email,
-              partsCount: inquiry.parts.length,
-              filesCount: inquiry.files.length
+    // OPTIMIZED: Upload PDFs to Cloudinary asynchronously (after response sent)
+    const pdfFilesToUpload = files.filter(f => f._isPdf && f._tempPath);
+    if (pdfFilesToUpload.length > 0) {
+      setImmediate(async () => {
+        try {
+          const uploadPromises = pdfFilesToUpload.map(async (fileData) => {
+            try {
+              if (fs.existsSync(fileData._tempPath)) {
+                const fileBuffer = fs.readFileSync(fileData._tempPath);
+                const cloudinaryResult = await uploadPdfToCloudinary(
+                  fileBuffer,
+                  fileData.originalName,
+                  'inquiries/pdfs'
+                );
+                
+                // Update inquiry with Cloudinary URL
+                await Inquiry.updateOne(
+                  { _id: inquiry._id, 'files.fileName': fileData.fileName },
+                  {
+                    $set: {
+                      'files.$.filePath': cloudinaryResult.url,
+                      'files.$.cloudinaryUrl': cloudinaryResult.url,
+                      'files.$.cloudinaryPublicId': cloudinaryResult.public_id
+                    }
+                  }
+                );
+                
+                // Delete temp file
+                try {
+                  fs.unlinkSync(fileData._tempPath);
+                } catch (e) {}
+              }
+            } catch (error) {
+              console.error(`Error uploading PDF ${fileData.originalName} to Cloudinary:`, error.message);
             }
           });
+          
+          await Promise.all(uploadPromises);
+        } catch (error) {
+          console.error('Error in async Cloudinary upload:', error);
         }
-        
-        
-        // Send real-time WebSocket notification
+      });
+    }
+
+    // OPTIMIZED: Process Excel files asynchronously (after response)
+    if (excelFiles.length > 0) {
+      setImmediate(async () => {
         try {
-          websocketService.notifyNewInquiry(inquiry);
-        } catch (wsError) {
-          console.error('WebSocket notification failed:', wsError);
+          const excelPromises = excelFiles.map(async (excelFile) => {
+            try {
+              if (!excelFile.fileData) return [];
+              
+              const tempPath = path.join(__dirname, '..', 'uploads', 'temp', `excel-${Date.now()}-${Math.random().toString(36).substring(7)}.xlsx`);
+              const tempDir = path.dirname(tempPath);
+              if (!fs.existsSync(tempDir)) {
+                fs.mkdirSync(tempDir, { recursive: true });
+              }
+              
+              fs.writeFileSync(tempPath, excelFile.fileData);
+              const excelResult = await processExcelFile(tempPath);
+              
+              // Delete temp file after processing
+              if (fs.existsSync(tempPath)) {
+                fs.unlinkSync(tempPath);
+              }
+              
+              if (excelResult.success && excelResult.components && excelResult.components.length > 0) {
+                // Update inquiry with Excel components
+                await Inquiry.updateOne(
+                  { _id: inquiry._id },
+                  { $push: { parts: { $each: excelResult.components } } }
+                );
+              }
+              
+              return excelResult.components || [];
+            } catch (error) {
+              console.error(`Error processing Excel file ${excelFile.originalName}:`, error);
+              return [];
+            }
+          });
+          
+          await Promise.all(excelPromises);
+        } catch (error) {
+          console.error('Error in async Excel processing:', error);
         }
+      });
+    }
+
+    // OPTIMIZED: Send notifications asynchronously (don't block response)
+    setImmediate(async () => {
+      try {
+        // Populate customer data for notification (async)
+        await inquiry.populate('customer', 'firstName lastName email companyName phoneNumber');
         
-      } catch (notificationError) {
-        console.error('Failed to create notifications:', notificationError);
+        // Send email notification to back office (async)
+        try {
+          await sendInquiryNotification(inquiry);
+        } catch (emailError) {
+          console.error('❌ Inquiry email notification failed:', emailError.message);
+        }
+
+        // OPTIMIZED: Create notifications in parallel
+        try {
+          const backOfficeUsers = await User.find({ role: { $in: ['admin', 'backoffice'] } }).lean().select('_id');
+          
+          const notificationPromises = backOfficeUsers.map(user => 
+            Notification.createNotification({
+              title: 'New Inquiry Received',
+              message: `Inquiry ${inquiry.inquiryNumber} received from ${inquiry.customer?.firstName || 'Customer'} ${inquiry.customer?.lastName || ''}. ${inquiry.parts.length} parts, ${inquiry.files.length} files. Please review.`,
+              type: 'info',
+              userId: user._id,
+              relatedEntity: {
+                type: 'inquiry',
+                entityId: inquiry._id
+              },
+              metadata: {
+                inquiryNumber: inquiry.inquiryNumber,
+                customerName: `${inquiry.customer?.firstName || ''} ${inquiry.customer?.lastName || ''}`.trim() || 'Customer',
+                customerEmail: inquiry.customer?.email || '',
+                partsCount: inquiry.parts.length,
+                filesCount: inquiry.files.length
+              }
+            })
+          );
+          
+          await Promise.all(notificationPromises);
+          
+          // Send real-time WebSocket notification
+          try {
+            websocketService.notifyNewInquiry(inquiry);
+          } catch (wsError) {
+            console.error('WebSocket notification failed:', wsError);
+          }
+          
+        } catch (notificationError) {
+          console.error('Failed to create notifications:', notificationError);
+        }
+      } catch (error) {
+        console.error('Error in async notification processing:', error);
       }
     });
 
@@ -721,15 +701,18 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
-// Get all inquiries (Back Office)
+// Get all inquiries (Back Office) - ULTRA OPTIMIZED
 router.get('/admin/all', authenticateToken, requireBackOffice, async (req, res) => {
   try {
+    const { limit = 500 } = req.query; // Default limit to 500 for faster response
+    
+    // OPTIMIZED: Limit results and select only essential fields
     const inquiries = await Inquiry.find()
       .sort({ createdAt: -1 })
-      .populate('customer', 'firstName lastName companyName email phoneNumber address')
-      .lean() // Use lean for better performance
-      .select('-files.fileData'); // Exclude fileData to reduce payload size
-      // Note: All other fields (parts, deliveryAddress, specialInstructions, expectedDeliveryDate) are included
+      .limit(parseInt(limit))
+      .populate('customer', 'firstName lastName companyName email phoneNumber')
+      .lean()
+      .select('inquiryNumber status customer parts deliveryAddress specialInstructions expectedDeliveryDate createdAt quotation files.originalName files.fileType files.fileSize files.cloudinaryUrl'); // Select only needed fields
 
     res.json({
       success: true,
@@ -770,21 +753,25 @@ router.get('/admin/:id', authenticateToken, requireBackOffice, async (req, res) 
     
     let inquiry;
     
-    // Check if ID is a MongoDB ObjectId or inquiry number
+    // OPTIMIZED: Use lean() for faster queries
     if (mongoose.Types.ObjectId.isValid(id)) {
       // Search by ObjectId
       inquiry = await Inquiry.findOne({
         _id: id
       })
       .populate('customer', 'firstName lastName companyName email phoneNumber')
-      .populate('quotation', 'quotationNumber status totalAmount validUntil');
+      .populate('quotation', 'quotationNumber status totalAmount validUntil')
+      .lean()
+      .select('-files.fileData'); // Exclude file data
     } else {
       // Search by inquiry number
       inquiry = await Inquiry.findOne({
         inquiryNumber: id
       })
       .populate('customer', 'firstName lastName companyName email phoneNumber')
-      .populate('quotation', 'quotationNumber status totalAmount validUntil');
+      .populate('quotation', 'quotationNumber status totalAmount validUntil')
+      .lean()
+      .select('-files.fileData'); // Exclude file data
     }
 
     if (!inquiry) {
@@ -914,19 +901,13 @@ router.get('/excel-template', async (req, res) => {
   }
 });
 
-// Get specific inquiry
+// Get specific inquiry - Allow both customers and admins
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     
-    console.log('=== REGULAR INQUIRY REQUEST ===');
-    console.log('Inquiry ID:', id);
-    console.log('User ID:', req.userId);
-    console.log('User role:', req.userRole);
-    
     // Check if ID is valid
     if (!id || id === 'undefined' || id === 'null' || id.trim() === '') {
-      console.log('Invalid ID provided:', id);
       return res.status(400).json({
         success: false,
         message: 'Invalid inquiry ID provided',
@@ -935,35 +916,77 @@ router.get('/:id', authenticateToken, async (req, res) => {
       });
     }
     
-    console.log('Fetching inquiry with ID:', id);
+    // Check if user is admin/backoffice - they can access any inquiry
+    const isAdmin = ['admin', 'backoffice', 'subadmin'].includes(req.userRole);
     
     let inquiry;
     
-    // Check if ID is a MongoDB ObjectId or inquiry number
+    // OPTIMIZED: Use lean() for faster queries
     if (mongoose.Types.ObjectId.isValid(id)) {
       // Search by ObjectId
-      inquiry = await Inquiry.findOne({
-        _id: id,
-        customer: req.userId
-      })
-      .populate('customer', 'firstName lastName companyName')
-      .populate('quotation', 'quotationNumber status totalAmount validUntil');
+      if (isAdmin) {
+        // Admin can access any inquiry
+        inquiry = await Inquiry.findOne({
+          _id: id
+        })
+        .populate('customer', 'firstName lastName companyName email phoneNumber')
+        .populate('quotation', 'quotationNumber status totalAmount validUntil')
+        .lean()
+        .select('-files.fileData');
+      } else {
+        // Customer can only access their own inquiries
+        inquiry = await Inquiry.findOne({
+          _id: id,
+          customer: req.userId
+        })
+        .populate('customer', 'firstName lastName companyName')
+        .populate('quotation', 'quotationNumber status totalAmount validUntil')
+        .lean()
+        .select('-files.fileData');
+      }
     } else {
       // Search by inquiry number
-      inquiry = await Inquiry.findOne({
-        inquiryNumber: id,
-        customer: req.userId
-      })
-      .populate('customer', 'firstName lastName companyName')
-      .populate('quotation', 'quotationNumber status totalAmount validUntil');
+      if (isAdmin) {
+        // Admin can access any inquiry
+        inquiry = await Inquiry.findOne({
+          inquiryNumber: id
+        })
+        .populate('customer', 'firstName lastName companyName email phoneNumber')
+        .populate('quotation', 'quotationNumber status totalAmount validUntil')
+        .lean()
+        .select('-files.fileData');
+      } else {
+        // Customer can only access their own inquiries
+        inquiry = await Inquiry.findOne({
+          inquiryNumber: id,
+          customer: req.userId
+        })
+        .populate('customer', 'firstName lastName companyName')
+        .populate('quotation', 'quotationNumber status totalAmount validUntil')
+        .lean()
+        .select('-files.fileData');
+      }
     }
 
     if (!inquiry) {
+      // Check if inquiry exists but user doesn't have access
+      const inquiryExists = await Inquiry.findOne(
+        mongoose.Types.ObjectId.isValid(id) ? { _id: id } : { inquiryNumber: id }
+      ).lean().select('_id customer');
+      
+      if (inquiryExists && !isAdmin) {
+        // Inquiry exists but doesn't belong to user
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. This inquiry does not belong to you.',
+          searchedId: id
+        });
+      }
+      
       return res.status(404).json({
         success: false,
         message: 'Inquiry not found',
-        searchedId: id,
-        userId: req.userId
+        searchedId: id
       });
     }
 
@@ -976,6 +999,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
     console.error('Get inquiry error:', error);
     console.error('Request params:', req.params);
     console.error('User ID:', req.userId);
+    console.error('User role:', req.userRole);
     
     res.status(500).json({
       success: false,
@@ -1150,7 +1174,7 @@ router.get('/:id/files/:filename/download', authenticateToken, async (req, res) 
 });
 
 // Upload additional files to existing inquiry
-router.post('/:id/upload', authenticateToken, upload.array('files', 20), handleMulterErrors, async (req, res) => {
+router.post('/:id/upload', authenticateToken, upload.array('files', 100), handleMulterErrors, async (req, res) => {
   try {
     const inquiry = await Inquiry.findOne({
       _id: req.params.id,
@@ -1177,6 +1201,14 @@ router.post('/:id/upload', authenticateToken, upload.array('files', 20), handleM
     for (const file of req.files) {
       const fileType = path.extname(file.originalname).toLowerCase();
       const isPdf = fileType === '.pdf';
+      
+      // Validate PDF file size (5MB limit)
+      if (isPdf && file.size > 5 * 1024 * 1024) {
+        return res.status(400).json({
+          success: false,
+          message: `PDF file "${file.originalname}" exceeds 5MB limit. File size: ${(file.size / 1024 / 1024).toFixed(2)}MB`
+        });
+      }
       
       console.log(`📄 Processing file: ${file.originalname}`);
       console.log(`   - Path: ${file.path}`);

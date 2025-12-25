@@ -9,16 +9,17 @@ const router = express.Router();
 // Import middleware from auth.js
 const { authenticateToken, requireBackOffice } = require('../middleware/auth');
 
-// Get customer orders (Customer access)
+// Get customer orders (Customer access) - OPTIMIZED
 router.get('/customer', authenticateToken, async (req, res) => {
   try {
-    // Allow any authenticated user to access their own orders
-    // Admin/backoffice can access via different routes
+    // OPTIMIZED: Use lean() and select only essential fields
     const orders = await Order.find({ customer: req.userId })
       .populate('customer', 'firstName lastName email companyName')
-      .populate('quotation', 'quotationNumber createdAt')
+      .populate('quotation', 'quotationNumber')
       .populate('inquiry', 'inquiryNumber')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean()
+      .select('orderNumber status customer quotation inquiry totalAmount createdAt updatedAt payment.status dispatch.courier dispatch.trackingNumber');
 
     res.json({
       success: true,
@@ -34,14 +35,20 @@ router.get('/customer', authenticateToken, async (req, res) => {
   }
 });
 
-// Get all orders (Back Office)
+// Get all orders (Back Office) - ULTRA OPTIMIZED
 router.get('/', authenticateToken, requireBackOffice, async (req, res) => {
   try {
+    const { limit = 500 } = req.query; // Default limit to 500 for faster response
+    
+    // OPTIMIZED: Select only essential fields and limit results
     const orders = await Order.find()
       .populate('customer', 'firstName lastName email companyName')
-      .populate('quotation', 'quotationNumber createdAt')
+      .populate('quotation', 'quotationNumber')
       .populate('inquiry', 'inquiryNumber')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .lean()
+      .select('orderNumber status customer quotation inquiry totalAmount createdAt updatedAt payment.status dispatch.courier dispatch.trackingNumber');
 
     res.json({
       success: true,
@@ -307,18 +314,23 @@ router.get('/:id', authenticateToken, async (req, res) => {
     // Check if id is a MongoDB ObjectId (24 hex characters) or order number
     const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
     
+    // OPTIMIZED: Use lean() for faster queries
     if (isObjectId) {
       // Search by MongoDB ObjectId
       order = await Order.findById(id)
         .populate('customer', 'firstName lastName email companyName phone address')
         .populate('quotation', 'quotationNumber parts totalAmount createdAt')
-        .populate('inquiry', 'inquiryNumber files parts deliveryAddress specialInstructions');
+        .populate('inquiry', 'inquiryNumber files parts deliveryAddress specialInstructions')
+        .lean()
+        .select('-inquiry.files.fileData'); // Exclude file data
     } else {
       // Search by order number
       order = await Order.findOne({ orderNumber: id })
         .populate('customer', 'firstName lastName email companyName phone address')
         .populate('quotation', 'quotationNumber parts totalAmount createdAt')
-        .populate('inquiry', 'inquiryNumber files parts deliveryAddress specialInstructions');
+        .populate('inquiry', 'inquiryNumber files parts deliveryAddress specialInstructions')
+        .lean()
+        .select('-inquiry.files.fileData'); // Exclude file data
     }
 
     if (!order) {

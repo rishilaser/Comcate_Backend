@@ -36,13 +36,13 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 500 * 1024 * 1024 // 500MB limit
+    fileSize: 5 * 1024 * 1024 // 5MB limit for PDFs
   },
   fileFilter: (req, file, cb) => {
     if (file.mimetype === 'application/pdf') {
       cb(null, true);
     } else {
-      cb(new Error('Only PDF files are allowed'), false);
+      cb(new Error('Only PDF files are allowed. Maximum file size is 5MB.'), false);
     }
   }
 });
@@ -501,60 +501,17 @@ router.post('/upload', [
     }
     console.log('   ✅ Valid PDF header detected');
     
-    // Upload PDF to Cloudinary
-    console.log('📤 ===== BACKEND: UPLOADING PDF TO CLOUDINARY =====');
-    let cloudinaryUrl = null;
-    let cloudinaryPublicId = null;
-    
-    try {
-      // Read file buffer
-      const fileBuffer = fs.readFileSync(req.file.path);
-      
-      // Upload to Cloudinary
-      const cloudinaryResult = await uploadPdfToCloudinary(
-        fileBuffer,
-        req.file.originalname,
-        'quotations'
-      );
-      
-      cloudinaryUrl = cloudinaryResult.url;
-      cloudinaryPublicId = cloudinaryResult.public_id;
-      
-      console.log('✅ PDF uploaded to Cloudinary successfully!');
-      console.log('   - Cloudinary URL:', cloudinaryUrl);
-      console.log('   - Public ID:', cloudinaryPublicId);
-      
-      // Delete file from disk after successful upload
-      try {
-        fs.unlinkSync(req.file.path);
-        console.log('   🗑️  Local file deleted after Cloudinary upload');
-      } catch (deleteError) {
-        console.error('   ⚠️  Error deleting local file:', deleteError.message);
-      }
-      
-    } catch (cloudinaryError) {
-      console.error('❌ Error uploading PDF to Cloudinary:', cloudinaryError.message);
-      // Fallback: keep file on disk if Cloudinary fails
-      console.log('⚠️  Falling back to disk storage');
-      cloudinaryUrl = null;
-    }
-    
     const pdfFilename = req.file.filename;
-    console.log('✅ PDF File Processed Successfully:');
-    console.log('   - Filename:', pdfFilename);
-    console.log('   - File Size:', fileStats.size, 'bytes');
-    console.log('   - Storage:', cloudinaryUrl ? 'Cloudinary' : 'Disk (fallback)');
-
-    // ✅ Store Cloudinary URL in database (or filename as fallback)
+    
+    // OPTIMIZED: Store file path temporarily, upload to Cloudinary async
     const quotationData = {
       inquiryId: inquiryId.toString(),
       customerInfo: parsedCustomerInfo,
       totalAmount: parseFloat(totalAmount),
-      quotationPdf: cloudinaryUrl || pdfFilename, // Store Cloudinary URL or filename
-      quotationPdfFilename: req.file.originalname, // Store original filename
-      quotationPdfCloudinaryUrl: cloudinaryUrl, // Store Cloudinary URL separately
-      quotationPdfCloudinaryPublicId: cloudinaryPublicId, // For future deletion
-      // Note: quotationPdfData (Buffer) is deprecated - files are stored on Cloudinary
+      quotationPdf: pdfFilename, // Temporary - will be updated with Cloudinary URL
+      quotationPdfFilename: req.file.originalname,
+      quotationPdfCloudinaryUrl: null, // Will be set async
+      quotationPdfCloudinaryPublicId: null, // Will be set async
       items: [],
       status: 'draft',
       validUntil: validUntil ? new Date(validUntil) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
@@ -563,57 +520,81 @@ router.post('/upload', [
       createdBy: req.userId
     };
 
-    console.log('💾 ===== BACKEND: PREPARING DATABASE SAVE =====');
-    console.log('📦 Quotation Data Prepared:');
-    console.log('   - quotationPdf:', quotationData.quotationPdf);
-    console.log('   - quotationPdfCloudinaryUrl:', quotationData.quotationPdfCloudinaryUrl || 'N/A');
-    console.log('   - Storage:', cloudinaryUrl ? 'Cloudinary ✅' : 'Disk (fallback)');
-
-    // Save quotation to database
-    console.log('💾 ===== BACKEND: SAVING TO DATABASE =====');
-    console.log('💾 Saving quotation with PDF URL to MongoDB...');
+    // Save quotation quickly (without waiting for Cloudinary)
     const savedQuotation = await Quotation.create(quotationData);
-    console.log('✅ Quotation Saved Successfully:');
-    console.log('   - Quotation ID:', savedQuotation._id);
-    console.log('   - Quotation Number:', savedQuotation.quotationNumber);
-    console.log('   - Quotation PDF:', savedQuotation.quotationPdf);
-    console.log('   - PDF Storage:', cloudinaryUrl ? 'Cloudinary ✅' : 'Disk');
     
-    if (cloudinaryUrl) {
-      console.log('   ✅ PDF accessible at Cloudinary URL:', cloudinaryUrl);
-    } else {
-      console.log('   ⚠️  PDF stored on disk at: /uploads/quotations/' + pdfFilename);
-    }
-    
-    console.log('📄 ===== BACKEND: QUOTATION PDF UPLOAD COMPLETE =====');
-
-    // Update inquiry status
+    // Update inquiry status quickly
     await Inquiry.findByIdAndUpdate(inquiryId, { 
       status: 'quoted',
       quotation: savedQuotation._id 
     });
 
-    // Create notification for customer
-    try {
-      const Notification = require('../models/Notification');
-      await Notification.createNotification({
-        title: 'Quotation Uploaded',
-        message: `Your quotation ${savedQuotation.quotationNumber} has been uploaded for inquiry ${inquiry.inquiryNumber}. Total amount: $${totalAmount}.`,
-        type: 'info',
-        userId: inquiry.customer._id,
-        relatedEntity: {
-          type: 'quotation',
-          entityId: savedQuotation._id
-        }
-      });
-    } catch (notificationError) {
-      console.error('Failed to create notification:', notificationError);
-    }
-
-    res.json({
+    // Send response immediately
+    res.status(201).json({
       success: true,
       message: 'Quotation uploaded successfully',
-      quotation: savedQuotation
+      quotation: {
+        _id: savedQuotation._id,
+        quotationNumber: savedQuotation.quotationNumber,
+        inquiryId: savedQuotation.inquiryId,
+        totalAmount: savedQuotation.totalAmount,
+        status: savedQuotation.status
+      }
+    });
+
+    // OPTIMIZED: Upload PDF to Cloudinary asynchronously (after response)
+    setImmediate(async () => {
+      try {
+        const fileBuffer = fs.readFileSync(req.file.path);
+        const cloudinaryResult = await uploadPdfToCloudinary(
+          fileBuffer,
+          req.file.originalname,
+          'quotations'
+        );
+        
+        // Update quotation with Cloudinary URL
+        await Quotation.updateOne(
+          { _id: savedQuotation._id },
+          {
+            $set: {
+              quotationPdf: cloudinaryResult.url,
+              quotationPdfCloudinaryUrl: cloudinaryResult.url,
+              quotationPdfCloudinaryPublicId: cloudinaryResult.public_id
+            }
+          }
+        );
+        
+        // Delete file from disk
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (deleteError) {
+          console.error('Error deleting local file:', deleteError.message);
+        }
+      } catch (cloudinaryError) {
+        console.error('Error uploading PDF to Cloudinary:', cloudinaryError.message);
+      }
+    });
+
+    // OPTIMIZED: Create notifications asynchronously
+    setImmediate(async () => {
+      try {
+        const Notification = require('../models/Notification');
+        const inquiry = await Inquiry.findById(inquiryId).lean().populate('customer', '_id').select('inquiryNumber customer');
+        if (inquiry && inquiry.customer) {
+          await Notification.createNotification({
+            title: 'Quotation Uploaded',
+            message: `Your quotation ${savedQuotation.quotationNumber} has been uploaded for inquiry ${inquiry.inquiryNumber || inquiryId}. Total amount: $${totalAmount}.`,
+            type: 'info',
+            userId: inquiry.customer._id,
+            relatedEntity: {
+              type: 'quotation',
+              entityId: savedQuotation._id
+            }
+          });
+        }
+      } catch (notificationError) {
+        console.error('Failed to create notification:', notificationError);
+      }
     });
 
   } catch (error) {
@@ -627,11 +608,11 @@ router.post('/upload', [
 });
 
 // @route   GET /api/quotation
-// @desc    Get all quotations (Admin/Back Office)
+// @desc    Get all quotations (Admin/Back Office) - OPTIMIZED
 // @access  Private (Admin/Back Office)
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { page = 1, limit = 10, status, search } = req.query;
+    const { page = 1, limit = 50, status, search } = req.query;
     const skip = (page - 1) * limit;
     
     // Build query
@@ -647,54 +628,41 @@ router.get('/', authenticateToken, async (req, res) => {
       ];
     }
 
-    // Get quotations with pagination
-    const quotations = await Quotation.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .populate('createdBy', 'firstName lastName email');
+    // ULTRA OPTIMIZED: Get quotations with minimal fields and batch operations
+    const [quotations, total] = await Promise.all([
+      Quotation.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .select('quotationNumber inquiryId customerInfo totalAmount status quotationPdfCloudinaryUrl createdAt validUntil')
+        .lean(),
+      Quotation.countDocuments(query)
+    ]);
 
-    // Manually populate inquiry data for each quotation
-    const quotationsWithInquiry = await Promise.all(
-      quotations.map(async (quotation) => {
-        const quotationObj = quotation.toObject();
-        try {
-          // Find the inquiry using the inquiryId string
-          const inquiry = await Inquiry.findById(quotation.inquiryId).populate('customer', 'firstName lastName email companyName');
-          if (inquiry) {
-            quotationObj.inquiry = {
-              _id: inquiry._id,
-              inquiryNumber: inquiry.inquiryNumber,
-              customer: inquiry.customer
-            };
-          }
-        } catch (error) {
-          console.error('Error fetching inquiry for quotation:', quotation._id, error);
-          quotationObj.inquiry = null;
-        }
-        return quotationObj;
-      })
-    );
-
-    const total = await Quotation.countDocuments(query);
-
-    console.log('=== GET QUOTATIONS DEBUG ===');
-    console.log('Found quotations:', quotationsWithInquiry.length);
-    console.log('Sample quotation:', quotationsWithInquiry[0] ? {
-      id: quotationsWithInquiry[0]._id,
-      inquiryId: quotationsWithInquiry[0].inquiryId,
-      inquiry: quotationsWithInquiry[0].inquiry,
-      customerInfo: quotationsWithInquiry[0].customerInfo,
-      totalAmount: quotationsWithInquiry[0].totalAmount,
-      status: quotationsWithInquiry[0].status,
-      createdBy: quotationsWithInquiry[0].createdBy,
-      quotationPdf: quotationsWithInquiry[0].quotationPdf // Added to check PDF field
-    } : 'No quotations found');
+    // OPTIMIZED: Batch fetch inquiries only if needed
+    const inquiryIds = [...new Set(quotations.map(q => q.inquiryId).filter(Boolean))];
+    let inquiryMap = {};
     
-    console.log('Quotations with PDF:');
-    quotationsWithInquiry.forEach((q, i) => {
-      console.log(`  ${i+1}. ${q.quotationNumber}: quotationPdf = ${q.quotationPdf || 'null'}`);
-    });
+    if (inquiryIds.length > 0) {
+      const inquiries = await Inquiry.find({ _id: { $in: inquiryIds } })
+        .select('_id inquiryNumber customer')
+        .populate('customer', 'firstName lastName email companyName')
+        .lean();
+      
+      inquiries.forEach(inq => {
+        inquiryMap[inq._id.toString()] = {
+          _id: inq._id,
+          inquiryNumber: inq.inquiryNumber,
+          customer: inq.customer
+        };
+      });
+    }
+
+    // Map quotations with inquiry data
+    const quotationsWithInquiry = quotations.map(quotation => ({
+      ...quotation,
+      inquiry: inquiryMap[quotation.inquiryId] || null
+    }));
 
     res.json({
       success: true,
@@ -725,44 +693,47 @@ router.get('/customer', authenticateToken, async (req, res) => {
     const { page = 1, limit = 10, status } = req.query;
     const skip = (page - 1) * limit;
     
-    // Get customer's inquiries
-    const customerInquiries = await Inquiry.find({ customer: userId }).select('_id');
-    const inquiryIds = customerInquiries.map(inquiry => inquiry._id.toString());
+    // OPTIMIZED: Get customer's inquiries first
+    const customerInquiries = await Inquiry.find({ customer: userId }).select('_id').lean();
+    const inquiryIds = customerInquiries.map(inquiry => inquiry._id);
     
     // Build query
     const query = { inquiryId: { $in: inquiryIds } };
     if (status) {
       query.status = status;
     }
+    
+    // OPTIMIZED: Get quotations and total count in parallel
+    const [quotations, total] = await Promise.all([
+      Quotation.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean()
+        .select('quotationNumber inquiryId status totalAmount createdAt validUntil'),
+      Quotation.countDocuments(query)
+    ]);
 
-    // Get quotations with pagination
-    const quotations = await Quotation.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
+    // OPTIMIZED: Batch fetch all inquiries at once instead of one-by-one
+    const uniqueInquiryIds = [...new Set(quotations.map(q => q.inquiryId).filter(Boolean))];
+    const inquiries = await Inquiry.find({ _id: { $in: uniqueInquiryIds } })
+      .select('_id inquiryNumber')
+      .lean();
+    
+    // Create inquiry lookup map
+    const inquiryMap = {};
+    inquiries.forEach(inq => {
+      inquiryMap[inq._id.toString()] = {
+        _id: inq._id,
+        inquiryNumber: inq.inquiryNumber
+      };
+    });
 
-    const total = await Quotation.countDocuments(query);
-
-    // Manually populate inquiry data for each quotation
-    const quotationsWithInquiry = await Promise.all(
-      quotations.map(async (quotation) => {
-        const quotationObj = quotation.toObject();
-        try {
-          // Find the inquiry using the inquiryId string
-          const inquiry = await Inquiry.findById(quotation.inquiryId).select('inquiryNumber _id');
-          if (inquiry) {
-            quotationObj.inquiry = {
-              _id: inquiry._id,
-              inquiryNumber: inquiry.inquiryNumber
-            };
-          }
-        } catch (error) {
-          console.error('Error fetching inquiry for quotation:', quotation._id, error);
-          quotationObj.inquiry = null;
-        }
-        return quotationObj;
-      })
-    );
+    // Map quotations with inquiry data
+    const quotationsWithInquiry = quotations.map(quotation => ({
+      ...quotation,
+      inquiry: inquiryMap[quotation.inquiryId] || null
+    }));
 
     console.log('=== GET CUSTOMER QUOTATIONS ===');
     console.log('Customer ID:', userId);
@@ -854,14 +825,18 @@ router.get('/:inquiryId', authenticateToken, async (req, res) => {
 });
 
 // @route   GET /api/quotation/id/:id
-// @desc    Get quotation by quotation ID
+// @desc    Get quotation by quotation ID - Allow both customers and admins
 // @access  Private
 router.get('/id/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.userId;
+    
+    // Check if user is admin/backoffice - they can access any quotation
+    const isAdmin = ['admin', 'backoffice', 'subadmin'].includes(req.userRole);
 
     // Find the quotation by ID
-    const quotation = await Quotation.findById(id);
+    const quotation = await Quotation.findById(id).lean();
     if (!quotation) {
       return res.status(404).json({
         success: false,
@@ -869,11 +844,25 @@ router.get('/id/:id', authenticateToken, async (req, res) => {
       });
     }
 
+    // Check access control: Admin can access any, customer can only access their own
+    if (!isAdmin) {
+      // Verify this quotation belongs to the customer
+      const inquiry = await Inquiry.findById(quotation.inquiryId).lean().select('customer');
+      if (!inquiry || inquiry.customer.toString() !== userId.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. This quotation does not belong to you.'
+        });
+      }
+    }
+
     // Manually populate inquiry data
-    const quotationObj = quotation.toObject();
+    const quotationObj = quotation;
     try {
       // Find the inquiry using the inquiryId string
-      const inquiry = await Inquiry.findById(quotation.inquiryId).populate('customer', 'firstName lastName email companyName');
+      const inquiry = await Inquiry.findById(quotation.inquiryId)
+        .populate('customer', 'firstName lastName email companyName')
+        .lean();
       if (inquiry) {
         quotationObj.inquiry = {
           _id: inquiry._id,
@@ -1172,21 +1161,37 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
     
     console.log('📄 ===== BACKEND: QUOTATION PDF REQUEST =====');
     console.log('   - Quotation ID:', quotation._id);
+    console.log('   - Has quotationPdfCloudinaryUrl:', !!quotation.quotationPdfCloudinaryUrl);
     console.log('   - Has quotationPdfData:', !!quotation.quotationPdfData);
-    console.log('   - quotationPdfData type:', quotation.quotationPdfData ? typeof quotation.quotationPdfData : 'null');
-    console.log('   - quotationPdfData is Buffer:', quotation.quotationPdfData ? Buffer.isBuffer(quotation.quotationPdfData) : false);
+    console.log('   - quotationPdf:', quotation.quotationPdf);
 
-    // Check access control: Admin/Back Office can view any PDF, customers can only view their own
+    // OPTIMIZED: Check access control with lean query
     const isAdmin = ['admin', 'backoffice', 'subadmin'].includes(req.userRole);
     if (!isAdmin) {
-      // For customers, verify the quotation belongs to them
-      const inquiry = await Inquiry.findById(quotation.inquiryId);
+      // For customers, verify the quotation belongs to them (use lean for faster query)
+      const inquiry = await Inquiry.findById(quotation.inquiryId).lean().select('customer');
       if (!inquiry || inquiry.customer.toString() !== userId.toString()) {
         return res.status(403).json({
           success: false,
           message: 'Access denied. This quotation does not belong to you.'
         });
       }
+    }
+    
+    // ✅ Check Cloudinary URL first (new format)
+    if (quotation.quotationPdfCloudinaryUrl) {
+      console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY =====');
+      console.log('   - Cloudinary URL:', quotation.quotationPdfCloudinaryUrl);
+      // Redirect to Cloudinary URL for viewing
+      return res.redirect(quotation.quotationPdfCloudinaryUrl);
+    }
+    
+    // Check if quotationPdf is a Cloudinary URL (starts with http)
+    if (quotation.quotationPdf && quotation.quotationPdf.startsWith('http')) {
+      console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY (URL format) =====');
+      console.log('   - Cloudinary URL:', quotation.quotationPdf);
+      // Redirect to Cloudinary URL for viewing
+      return res.redirect(quotation.quotationPdf);
     }
 
     // Helper function to generate PDF
@@ -1225,6 +1230,22 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       return pdfResult;
     };
 
+    // ✅ Check Cloudinary URL first (new format)
+    if (quotation.quotationPdfCloudinaryUrl) {
+      console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY =====');
+      console.log('   - Cloudinary URL:', quotation.quotationPdfCloudinaryUrl);
+      // Redirect to Cloudinary URL for viewing
+      return res.redirect(quotation.quotationPdfCloudinaryUrl);
+    }
+    
+    // Check if quotationPdf is a Cloudinary URL (starts with http)
+    if (quotation.quotationPdf && quotation.quotationPdf.startsWith('http')) {
+      console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY (URL format) =====');
+      console.log('   - Cloudinary URL:', quotation.quotationPdf);
+      // Redirect to Cloudinary URL for viewing
+      return res.redirect(quotation.quotationPdf);
+    }
+    
     // Check if PDF data exists in database (support multiple formats)
     let pdfBuffer = null;
     let pdfFileName = `quotation_${quotation.quotationNumber}.pdf`;
@@ -1330,9 +1351,25 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       console.log('PDF found in database (old format: quotationPdf object)');
     }
 
-    // ✅ BEST PRACTICE: Check filesystem first (files are stored on disk) - VPS-compatible
+    // ✅ Check Cloudinary URL first (new format)
+    if (quotation.quotationPdfCloudinaryUrl) {
+      console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY =====');
+      console.log('   - Cloudinary URL:', quotation.quotationPdfCloudinaryUrl);
+      // Redirect to Cloudinary URL
+      return res.redirect(quotation.quotationPdfCloudinaryUrl);
+    }
+    
+    // Check if quotationPdf is a Cloudinary URL (starts with http)
+    if (quotation.quotationPdf && quotation.quotationPdf.startsWith('http')) {
+      console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY (URL format) =====');
+      console.log('   - Cloudinary URL:', quotation.quotationPdf);
+      // Redirect to Cloudinary URL
+      return res.redirect(quotation.quotationPdf);
+    }
+    
+    // ✅ BEST PRACTICE: Check filesystem (old format - backward compatibility) - VPS-compatible
     let pdfPath;
-    if (quotation.quotationPdf) {
+    if (quotation.quotationPdf && !quotation.quotationPdf.startsWith('http')) {
       pdfPath = path.join(getQuotationsPath(), quotation.quotationPdf);
       if (fs.existsSync(pdfPath)) {
         console.log('📄 ===== BACKEND: SERVING PDF FROM FILESYSTEM =====');
@@ -1516,8 +1553,8 @@ router.get('/:id/pdf/download', authenticateToken, async (req, res) => {
       }).lean();
       
       if (quotation) {
-        // Verify the quotation belongs to the user
-        const inquiry = await Inquiry.findById(quotation.inquiryId);
+        // OPTIMIZED: Verify the quotation belongs to the user (use lean for faster query)
+        const inquiry = await Inquiry.findById(quotation.inquiryId).lean().select('customer');
         if (!inquiry || inquiry.customer.toString() !== req.userId.toString()) {
           console.log('Quotation exists but user does not have access. Inquiry customer:', inquiry?.customer);
           quotation = null;
@@ -1530,8 +1567,8 @@ router.get('/:id/pdf/download', authenticateToken, async (req, res) => {
       quotation = await Quotation.findOne({ inquiryId: id }).lean();
       
       if (quotation && !isAdmin) {
-        // Verify the quotation belongs to the user
-        const inquiry = await Inquiry.findById(quotation.inquiryId);
+        // OPTIMIZED: Verify the quotation belongs to the user (use lean for faster query)
+        const inquiry = await Inquiry.findById(quotation.inquiryId).lean().select('customer');
         if (!inquiry || inquiry.customer.toString() !== req.userId.toString()) {
           quotation = null;
         }
@@ -1640,8 +1677,24 @@ router.get('/:id/pdf/download', authenticateToken, async (req, res) => {
       console.log('⚠️  No quotationPdfData in database, trying filesystem...');
     }
     
+    // Check for Cloudinary URL (new format)
+    if (!pdfBuffer && quotation.quotationPdfCloudinaryUrl) {
+      console.log('☁️  PDF stored on Cloudinary');
+      console.log('   - Cloudinary URL:', quotation.quotationPdfCloudinaryUrl);
+      // Redirect to Cloudinary URL for download
+      return res.redirect(quotation.quotationPdfCloudinaryUrl);
+    }
+    
+    // Check if quotationPdf is a Cloudinary URL (starts with http)
+    if (!pdfBuffer && quotation.quotationPdf && quotation.quotationPdf.startsWith('http')) {
+      console.log('☁️  PDF stored on Cloudinary (URL format)');
+      console.log('   - Cloudinary URL:', quotation.quotationPdf);
+      // Redirect to Cloudinary URL for download
+      return res.redirect(quotation.quotationPdf);
+    }
+    
     // Fallback to filesystem (old format - backward compatibility)
-    if (!pdfBuffer && quotation.quotationPdf) {
+    if (!pdfBuffer && quotation.quotationPdf && !quotation.quotationPdf.startsWith('http')) {
       const pdfPath = path.join(getQuotationsPath(), quotation.quotationPdf);
       if (fs.existsSync(pdfPath)) {
         console.log('📂 Reading PDF from filesystem (backward compatibility)');
@@ -1657,7 +1710,7 @@ router.get('/:id/pdf/download', authenticateToken, async (req, res) => {
     
     // If still no buffer, return error
     if (!pdfBuffer || pdfBuffer.length === 0) {
-      console.log('❌ PDF not found in database or filesystem');
+      console.log('❌ PDF not found in database, Cloudinary, or filesystem');
       return res.status(404).json({
         success: false,
         message: 'PDF not found on server'
@@ -1735,6 +1788,19 @@ router.put('/:id/upload-pdf', [
     
     // Validate PDF file
     const fileStats = fs.statSync(req.file.path);
+    
+    // Validate file size (5MB limit)
+    if (fileStats.size > 5 * 1024 * 1024) {
+      // Delete invalid file
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (e) {}
+      return res.status(400).json({
+        success: false,
+        message: `PDF file size exceeds 5MB limit. Your file is ${(fileStats.size / 1024 / 1024).toFixed(2)}MB. Please upload a smaller file.`
+      });
+    }
+    
     if (fileStats.size < 100) {
       // Delete invalid file
       try {

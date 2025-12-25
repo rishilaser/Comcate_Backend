@@ -8,7 +8,7 @@ const router = express.Router();
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 100 * 1024 * 1024 // 100MB limit
+    fileSize: 5 * 1024 * 1024 // 5MB limit for PDFs
   },
   fileFilter: (req, file, cb) => {
     // Accept only PDF files
@@ -75,6 +75,15 @@ router.post('/upload-pdf', upload.single('file'), async (req, res) => {
     console.error('   ❌ Cloudinary Upload Failed!');
     console.error('   Error:', error.message);
     console.log('');
+    
+    // Handle file size limit error
+    if (error.message && error.message.includes('File too large')) {
+      return res.status(413).json({
+        success: false,
+        error: 'File size exceeds 5MB limit. Please upload a smaller PDF file.'
+      });
+    }
+    
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to upload PDF to Cloudinary'

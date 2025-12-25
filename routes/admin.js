@@ -45,14 +45,20 @@ router.get('/dashboard/stats', authenticateToken, requireBackOffice, async (req,
   }
 });
 
-// Get all orders (Admin/Back Office)
+// Get all orders (Admin/Back Office) - ULTRA OPTIMIZED
 router.get('/orders', authenticateToken, requireBackOffice, async (req, res) => {
   try {
+    const { limit = 500 } = req.query; // Default limit to 500 for faster response
+    
+    // OPTIMIZED: Select only essential fields and limit results
     const orders = await Order.find()
       .populate('customer', 'firstName lastName email companyName')
       .populate('quotation', 'quotationNumber')
       .populate('inquiry', 'inquiryNumber')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .lean()
+      .select('orderNumber status customer quotation inquiry totalAmount createdAt updatedAt payment.status dispatch.courier dispatch.trackingNumber'); // Select only needed fields
 
     res.json({
       success: true,

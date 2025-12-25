@@ -5,36 +5,31 @@ const Inquiry = require('../models/Inquiry');
 const Quotation = require('../models/Quotation');
 const Order = require('../models/Order');
 
-// Get customer dashboard statistics
+// Get customer dashboard statistics - OPTIMIZED
 router.get('/stats', authenticateToken, async (req, res) => {
   try {
     const userId = req.userId;
 
-    // Get total inquiries for this customer
-    const totalInquiries = await Inquiry.countDocuments({ customer: userId });
+    // OPTIMIZED: Get all counts in parallel
+    const [
+      totalInquiries,
+      customerInquiries,
+      totalOrders,
+      completedOrders,
+      activeOrders
+    ] = await Promise.all([
+      Inquiry.countDocuments({ customer: userId }),
+      Inquiry.find({ customer: userId }).select('_id').lean(), // Use lean for faster query
+      Order.countDocuments({ customer: userId }),
+      Order.countDocuments({ customer: userId, status: 'completed' }),
+      Order.countDocuments({ customer: userId, status: { $in: ['confirmed', 'in_production', 'dispatched'] } })
+    ]);
 
-    // Get quotations for this customer's inquiries
-    const customerInquiries = await Inquiry.find({ customer: userId }).select('_id');
-    const inquiryIds = customerInquiries.map(inquiry => inquiry._id.toString());
-    
-    const totalQuotations = await Quotation.countDocuments({ 
-      inquiryId: { $in: inquiryIds } 
-    });
-
-    // Get orders for this customer
-    const totalOrders = await Order.countDocuments({ customer: userId });
-
-    // Get completed orders
-    const completedOrders = await Order.countDocuments({ 
-      customer: userId,
-      status: 'completed' 
-    });
-
-    // Get active orders (confirmed, in_production, dispatched)
-    const activeOrders = await Order.countDocuments({ 
-      customer: userId,
-      status: { $in: ['confirmed', 'in_production', 'dispatched'] }
-    });
+    // Get inquiry IDs for quotation count
+    const inquiryIds = customerInquiries.map(inquiry => inquiry._id);
+    const totalQuotations = inquiryIds.length > 0 
+      ? await Quotation.countDocuments({ inquiryId: { $in: inquiryIds } })
+      : 0;
 
     res.json({
       success: true,
