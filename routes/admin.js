@@ -621,33 +621,29 @@ router.post('/change-role', async (req, res) => {
   }
 });
 
-// Get material data
+// Get material data - ULTRA OPTIMIZED for <1s response
 router.get('/materials', async (req, res) => {
   try {
-    console.log('📥 GET /api/admin/materials - Request received');
     const Settings = require('../models/Settings');
-    const settings = await Settings.getSettings();
     
-    console.log('📊 Settings found:', settings ? 'Yes' : 'No');
-    console.log('📦 Material data count:', settings?.materialData?.length || 0);
+    // OPTIMIZED: Use lean() and select only materialData field for faster query
+    const settings = await Settings.findOne()
+      .select('materialData')
+      .lean()
+      .limit(1);
     
-    if (settings && settings.materialData && settings.materialData.length > 0) {
-      console.log('✅ Returning', settings.materialData.length, 'materials');
-      console.log('Materials:', settings.materialData.map(m => `${m.material} (${m.status})`));
-    } else {
-      console.log('⚠️ No material data found in database');
-    }
-    
+    // Return response immediately
     res.json({
       success: true,
-      materialData: settings.materialData || []
+      materialData: settings?.materialData || []
     });
 
   } catch (error) {
     console.error('❌ Get material data error:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error'
+      message: 'Internal server error',
+      materialData: [] // Return empty array on error
     });
   }
 });

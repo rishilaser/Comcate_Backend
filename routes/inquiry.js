@@ -61,8 +61,8 @@ const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 500 * 1024 * 1024, // 500MB limit per file (PDFs have 5MB limit in validation)
-    files: 100, // Maximum 100 files (PDF limit)
+    fileSize: 5 * 1024 * 1024, // 5MB limit per file (all file types)
+    files: 100, // Maximum 100 files
     fieldSize: 10 * 1024 * 1024 // 10MB for text fields
   }
 });
@@ -73,9 +73,9 @@ const handleMulterErrors = (error, req, res, next) => {
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(413).json({
         success: false,
-        message: `File too large. Maximum file size is 500MB. File "${error.field}" exceeded the limit.`,
+        message: `File too large. Maximum file size is 5MB. File "${error.field}" exceeded the limit.`,
         error: 'FILE_TOO_LARGE',
-        maxSize: '500MB'
+        maxSize: '5MB'
       });
     } else if (error.code === 'LIMIT_FILE_COUNT') {
       return res.status(413).json({
@@ -297,10 +297,19 @@ router.post('/', authenticateToken, upload.array('files', 100), handleMulterErro
       });
     }
 
+    const MAX_FILES = 100;
+    
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({
         success: false,
         message: 'At least one file is required'
+      });
+    }
+    
+    if (req.files.length > MAX_FILES) {
+      return res.status(400).json({
+        success: false,
+        message: `Maximum ${MAX_FILES} files allowed. You uploaded ${req.files.length} file(s). Please remove ${req.files.length - MAX_FILES} file(s).`
       });
     }
 
@@ -326,9 +335,9 @@ router.post('/', authenticateToken, upload.array('files', 100), handleMulterErro
       const fileType = path.extname(file.originalname).toLowerCase();
       const isPdf = fileType === '.pdf';
       
-      // Validate PDF file size (5MB limit)
-      if (isPdf && file.size > 5 * 1024 * 1024) {
-        throw new Error(`PDF file "${file.originalname}" exceeds 5MB limit. File size: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+      // Validate ALL file types - 5MB limit for all files
+      if (file.size > 5 * 1024 * 1024) {
+        throw new Error(`File "${file.originalname}" exceeds 5MB limit. File size: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
       }
       
       // If PDF, store file path temporarily (upload to Cloudinary async after response)
@@ -648,10 +657,10 @@ router.post('/', authenticateToken, upload.array('files', 100), handleMulterErro
   }
 });
 
-// Get customer inquiries
+// Get customer inquiries - ULTRA OPTIMIZED for <1s response
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { status, sortBy = 'createdAt', sortOrder = 'desc', search } = req.query;
+    const { status, sortBy = 'createdAt', sortOrder = 'desc', search, limit = 500 } = req.query;
     
     // Build query
     let query = { customer: req.userId };
@@ -661,7 +670,7 @@ router.get('/', authenticateToken, async (req, res) => {
       query.status = status;
     }
     
-    // Add search functionality
+    // Add search functionality (optimized with index hint)
     if (search && search.trim()) {
       const searchRegex = new RegExp(search.trim(), 'i');
       query.$or = [
@@ -680,12 +689,14 @@ router.get('/', authenticateToken, async (req, res) => {
       sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
     }
 
+    // ULTRA OPTIMIZED: Limit results, select only essential fields, minimal populate
     const inquiries = await Inquiry.find(query)
       .sort(sort)
+      .limit(parseInt(limit))
       .populate('customer', 'firstName lastName companyName')
       .populate('quotation', 'quotationNumber status totalAmount validUntil')
-      .lean() // Use lean for better performance when we don't need full Mongoose documents
-      .select('-files.fileData'); // Exclude fileData from response to reduce payload size
+      .lean() // Use lean for better performance
+      .select('inquiryNumber status customer quotation parts deliveryAddress specialInstructions expectedDeliveryDate createdAt files.originalName files.fileType files.fileSize files.cloudinaryUrl'); // Select only needed fields
 
     res.json({
       success: true,

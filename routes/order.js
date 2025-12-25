@@ -713,27 +713,31 @@ router.put('/:id/dispatch', authenticateToken, requireBackOffice, [
   }
 });
 
-// Get customer orders
+// Get customer orders by customer ID (Admin/Back Office or own orders)
 router.get('/customer/:customerId', authenticateToken, async (req, res) => {
   try {
     const { customerId } = req.params;
 
     // Check if user is accessing their own orders or is admin/backoffice
-    if (req.userId !== customerId && !['admin', 'backoffice'].includes(req.userRole)) {
+    if (req.userId.toString() !== customerId.toString() && !['admin', 'backoffice', 'subadmin'].includes(req.userRole)) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
       });
     }
 
+    // OPTIMIZED: Use lean() and select only essential fields
     const orders = await Order.find({ customer: customerId })
+      .populate('customer', 'firstName lastName email companyName')
       .populate('quotation', 'quotationNumber')
       .populate('inquiry', 'inquiryNumber')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean()
+      .select('orderNumber status customer quotation inquiry totalAmount createdAt updatedAt payment.status dispatch.courier dispatch.trackingNumber');
 
     res.json({
       success: true,
-      orders
+      orders: orders || []
     });
 
   } catch (error) {
