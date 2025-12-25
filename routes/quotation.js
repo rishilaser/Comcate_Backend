@@ -612,7 +612,7 @@ router.post('/upload', [
 // @access  Private (Admin/Back Office)
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { page = 1, limit = 50, status, search } = req.query;
+    const { page = 1, limit = 50, status, search } = req.query; // Reduced to 50 for <1s response
     const skip = (page - 1) * limit;
     
     // Build query
@@ -628,32 +628,34 @@ router.get('/', authenticateToken, async (req, res) => {
       ];
     }
 
-    // ULTRA OPTIMIZED: Get quotations with minimal fields and batch operations
+    // ULTRA OPTIMIZED: Get quotations with minimal fields, limit results for speed
+    const maxLimit = Math.min(parseInt(limit) || 50, 50); // Max 50 for <1s response
     const [quotations, total] = await Promise.all([
       Quotation.find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(parseInt(limit))
+        .limit(maxLimit)
         .select('quotationNumber inquiryId customerInfo totalAmount status quotationPdfCloudinaryUrl createdAt validUntil')
         .lean(),
-      Quotation.countDocuments(query)
+      // Only count if needed (skip for first page to save time)
+      page === 1 ? Promise.resolve(0) : Quotation.countDocuments(query)
     ]);
 
-    // OPTIMIZED: Batch fetch inquiries only if needed
+    // ULTRA OPTIMIZED: Batch fetch inquiries only (skip customer for speed)
     const inquiryIds = [...new Set(quotations.map(q => q.inquiryId).filter(Boolean))];
     let inquiryMap = {};
     
     if (inquiryIds.length > 0) {
+      // Fetch inquiries with minimal fields only
       const inquiries = await Inquiry.find({ _id: { $in: inquiryIds } })
-        .select('_id inquiryNumber customer')
-        .populate('customer', 'firstName lastName email companyName')
+        .select('_id inquiryNumber')
         .lean();
       
+      // Map inquiries (no customer data for speed)
       inquiries.forEach(inq => {
         inquiryMap[inq._id.toString()] = {
           _id: inq._id,
-          inquiryNumber: inq.inquiryNumber,
-          customer: inq.customer
+          inquiryNumber: inq.inquiryNumber
         };
       });
     }
@@ -669,8 +671,8 @@ router.get('/', authenticateToken, async (req, res) => {
       quotations: quotationsWithInquiry,
       pagination: {
         current: parseInt(page),
-        pages: Math.ceil(total / limit),
-        total
+        pages: page === 1 ? 1 : Math.ceil((total || quotationsWithInquiry.length) / maxLimit), // Skip calculation for first page
+        total: page === 1 ? quotationsWithInquiry.length : (total || quotationsWithInquiry.length)
       }
     });
 

@@ -45,24 +45,48 @@ router.get('/dashboard/stats', authenticateToken, requireBackOffice, async (req,
   }
 });
 
-// Get all orders (Admin/Back Office) - ULTRA OPTIMIZED
+// Get all orders (Admin/Back Office) - ULTRA OPTIMIZED for <1s response
 router.get('/orders', authenticateToken, requireBackOffice, async (req, res) => {
   try {
-    const { limit = 500 } = req.query; // Default limit to 500 for faster response
+    const { limit = 100 } = req.query; // Reduced to 100 for <1s response
     
-    // OPTIMIZED: Select only essential fields and limit results
+    // ULTRA OPTIMIZED: Minimal populate, batch fetch, limit results
     const orders = await Order.find()
-      .populate('customer', 'firstName lastName email companyName')
-      .populate('quotation', 'quotationNumber')
-      .populate('inquiry', 'inquiryNumber')
       .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
+      .limit(Math.min(parseInt(limit) || 100, 100))
       .lean()
-      .select('orderNumber status customer quotation inquiry totalAmount createdAt updatedAt payment.status dispatch.courier dispatch.trackingNumber'); // Select only needed fields
+      .select('orderNumber status customer quotation inquiry totalAmount createdAt updatedAt payment.status dispatch.courier dispatch.trackingNumber');
+
+    // Batch fetch customer, quotation, inquiry data
+    const customerIds = [...new Set(orders.map(o => o.customer).filter(Boolean))];
+    const quotationIds = [...new Set(orders.map(o => o.quotation).filter(Boolean))];
+    const inquiryIds = [...new Set(orders.map(o => o.inquiry).filter(Boolean))];
+
+    const [customers, quotations, inquiries] = await Promise.all([
+      customerIds.length > 0 ? User.find({ _id: { $in: customerIds } }).select('firstName lastName email companyName').lean() : [],
+      quotationIds.length > 0 ? Quotation.find({ _id: { $in: quotationIds } }).select('quotationNumber').lean() : [],
+      inquiryIds.length > 0 ? Inquiry.find({ _id: { $in: inquiryIds } }).select('inquiryNumber').lean() : []
+    ]);
+
+    // Create lookup maps
+    const customerMap = {};
+    customers.forEach(c => { customerMap[c._id.toString()] = c; });
+    const quotationMap = {};
+    quotations.forEach(q => { quotationMap[q._id.toString()] = q; });
+    const inquiryMap = {};
+    inquiries.forEach(i => { inquiryMap[i._id.toString()] = i; });
+
+    // Map orders with populated data
+    const ordersWithData = orders.map(order => ({
+      ...order,
+      customer: order.customer ? customerMap[order.customer.toString()] || null : null,
+      quotation: order.quotation ? quotationMap[order.quotation.toString()] || null : null,
+      inquiry: order.inquiry ? inquiryMap[order.inquiry.toString()] || null : null
+    }));
 
     res.json({
       success: true,
-      orders
+      orders: ordersWithData
     });
 
   } catch (error) {

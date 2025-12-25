@@ -62,7 +62,7 @@ const upload = multer({
   fileFilter: fileFilter,
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB limit per file (all file types)
-    files: 100, // Maximum 100 files
+    files: undefined, // Unlimited files
     fieldSize: 10 * 1024 * 1024 // 10MB for text fields
   }
 });
@@ -80,9 +80,8 @@ const handleMulterErrors = (error, req, res, next) => {
     } else if (error.code === 'LIMIT_FILE_COUNT') {
       return res.status(413).json({
         success: false,
-        message: 'Too many files. Maximum 100 files allowed.',
-        error: 'TOO_MANY_FILES',
-        maxFiles: 100
+        message: 'Too many files. Please contact support.',
+        error: 'TOO_MANY_FILES'
       });
     } else if (error.code === 'LIMIT_FIELD_COUNT') {
       return res.status(413).json({
@@ -281,7 +280,7 @@ router.post('/debug', upload.array('files', 100), handleMulterErrors, (req, res)
 });
 
 // Create new inquiry
-router.post('/', authenticateToken, upload.array('files', 100), handleMulterErrors, [
+router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
   body('parts').notEmpty().withMessage('Parts data is required'),
   body('deliveryAddress').notEmpty().withMessage('Delivery address is required'),
   body('specialInstructions').optional()
@@ -660,9 +659,9 @@ router.post('/', authenticateToken, upload.array('files', 100), handleMulterErro
 // Get customer inquiries - ULTRA OPTIMIZED for <1s response
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { status, sortBy = 'createdAt', sortOrder = 'desc', search, limit = 500 } = req.query;
+    const { status, sortBy = 'createdAt', sortOrder = 'desc', search, limit = 100 } = req.query;
     
-    // Build query
+    // Build query - use index on customer + createdAt
     let query = { customer: req.userId };
     
     // Add status filter if provided
@@ -670,7 +669,7 @@ router.get('/', authenticateToken, async (req, res) => {
       query.status = status;
     }
     
-    // Add search functionality (optimized with index hint)
+    // Add search functionality (only if search provided)
     if (search && search.trim()) {
       const searchRegex = new RegExp(search.trim(), 'i');
       query.$or = [
@@ -679,62 +678,109 @@ router.get('/', authenticateToken, async (req, res) => {
       ];
     }
     
-    // Build sort object
-    let sort = {};
-    if (sortBy === 'customer.companyName') {
-      sort['customer.companyName'] = sortOrder === 'asc' ? 1 : -1;
-    } else if (sortBy === 'inquiryNumber') {
-      sort['inquiryNumber'] = sortOrder === 'asc' ? 1 : -1;
+    // Build sort object - default to createdAt for index usage
+    let sort = { createdAt: -1 }; // Default sort uses index
+    if (sortBy === 'inquiryNumber') {
+      sort = { inquiryNumber: sortOrder === 'asc' ? 1 : -1 };
+    } else if (sortBy !== 'createdAt') {
+      sort = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
     } else {
-      sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+      sort = { createdAt: sortOrder === 'asc' ? 1 : -1 };
     }
 
-    // ULTRA OPTIMIZED: Limit results, select only essential fields, minimal populate
+    // ULTRA OPTIMIZED: Minimal fields, no populate (customer already known), limit results
     const inquiries = await Inquiry.find(query)
       .sort(sort)
-      .limit(parseInt(limit))
-      .populate('customer', 'firstName lastName companyName')
-      .populate('quotation', 'quotationNumber status totalAmount validUntil')
+      .limit(Math.min(parseInt(limit) || 100, 100)) // Max 100 records
       .lean() // Use lean for better performance
-      .select('inquiryNumber status customer quotation parts deliveryAddress specialInstructions expectedDeliveryDate createdAt files.originalName files.fileType files.fileSize files.cloudinaryUrl'); // Select only needed fields
+      .select('inquiryNumber status quotation deliveryAddress specialInstructions expectedDeliveryDate createdAt files.originalName files.fileType files.fileSize files.cloudinaryUrl'); // Minimal fields, removed parts (can be large)
+
+    // OPTIMIZED: Batch fetch quotations only if needed
+    const quotationIds = inquiries.map(inq => inq.quotation).filter(Boolean);
+    let quotationMap = {};
+    
+    if (quotationIds.length > 0) {
+      const Quotation = require('../models/Quotation');
+      const quotations = await Quotation.find({ _id: { $in: quotationIds } })
+        .select('quotationNumber status totalAmount validUntil')
+        .lean();
+      
+      quotations.forEach(q => {
+        quotationMap[q._id.toString()] = {
+          quotationNumber: q.quotationNumber,
+          status: q.status,
+          totalAmount: q.totalAmount,
+          validUntil: q.validUntil
+        };
+      });
+    }
+
+    // Map inquiries with quotation data
+    const inquiriesWithQuotation = inquiries.map(inquiry => ({
+      ...inquiry,
+      quotation: inquiry.quotation ? quotationMap[inquiry.quotation.toString()] || null : null
+    }));
 
     res.json({
       success: true,
-      inquiries
+      inquiries: inquiriesWithQuotation || []
     });
 
   } catch (error) {
     console.error('Get inquiries error:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error'
+      message: 'Internal server error',
+      inquiries: [] // Always return empty array on error
     });
   }
 });
 
-// Get all inquiries (Back Office) - ULTRA OPTIMIZED
+// Get all inquiries (Back Office) - ULTRA OPTIMIZED for <1s response
 router.get('/admin/all', authenticateToken, requireBackOffice, async (req, res) => {
   try {
-    const { limit = 500 } = req.query; // Default limit to 500 for faster response
+    const { limit = 50 } = req.query; // Reduced to 50 for <1s response
     
-    // OPTIMIZED: Limit results and select only essential fields
+    // ULTRA OPTIMIZED: Minimal fields only, no large data, strict limit
     const inquiries = await Inquiry.find()
       .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
-      .populate('customer', 'firstName lastName companyName email phoneNumber')
+      .limit(Math.min(parseInt(limit) || 50, 50)) // Max 50 records for speed
       .lean()
-      .select('inquiryNumber status customer parts deliveryAddress specialInstructions expectedDeliveryDate createdAt quotation files.originalName files.fileType files.fileSize files.cloudinaryUrl'); // Select only needed fields
+      .select('inquiryNumber status customer expectedDeliveryDate createdAt quotation'); // Minimal fields only - removed files, deliveryAddress, specialInstructions
+
+    // Batch fetch customer data (only essential fields)
+    const User = require('../models/User');
+    const customerIds = [...new Set(inquiries.map(i => i.customer).filter(Boolean))];
+    const customers = customerIds.length > 0 
+      ? await User.find({ _id: { $in: customerIds } }).select('firstName lastName companyName').lean() // Only essential fields
+      : [];
+
+    // Create customer lookup map
+    const customerMap = {};
+    customers.forEach(c => { customerMap[c._id.toString()] = c; });
+
+    // Map inquiries with customer data (minimal)
+    const inquiriesWithCustomer = inquiries.map(inquiry => ({
+      _id: inquiry._id,
+      inquiryNumber: inquiry.inquiryNumber,
+      status: inquiry.status,
+      customer: inquiry.customer ? customerMap[inquiry.customer.toString()] || null : null,
+      expectedDeliveryDate: inquiry.expectedDeliveryDate,
+      createdAt: inquiry.createdAt,
+      quotation: inquiry.quotation || null
+    }));
 
     res.json({
       success: true,
-      inquiries
+      inquiries: inquiriesWithCustomer || []
     });
 
   } catch (error) {
     console.error('Get all inquiries error:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error'
+      message: 'Internal server error',
+      inquiries: []
     });
   }
 });
@@ -811,7 +857,7 @@ router.get('/admin/:id', authenticateToken, requireBackOffice, async (req, res) 
 });
 
 // Get user's own inquiries (for profile page)
-// Get customer inquiries (for customer profile)
+// Get customer inquiries (for customer profile) - ULTRA OPTIMIZED
 router.get('/customer', authenticateToken, async (req, res) => {
   try {
     // Only allow customers to access their own inquiries
@@ -822,13 +868,41 @@ router.get('/customer', authenticateToken, async (req, res) => {
       });
     }
 
+    // ULTRA OPTIMIZED: Use lean, limit, minimal fields, batch quotation fetch
     const inquiries = await Inquiry.find({ customer: req.userId })
-      .populate('quotation', 'quotationNumber totalAmount status')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .limit(100) // Limit to 100 records
+      .lean()
+      .select('inquiryNumber status quotation createdAt parts files');
+
+    // Batch fetch quotations
+    const quotationIds = inquiries.map(inq => inq.quotation).filter(Boolean);
+    let quotationMap = {};
+    
+    if (quotationIds.length > 0) {
+      const Quotation = require('../models/Quotation');
+      const quotations = await Quotation.find({ _id: { $in: quotationIds } })
+        .select('quotationNumber totalAmount status')
+        .lean();
+      
+      quotations.forEach(q => {
+        quotationMap[q._id.toString()] = {
+          quotationNumber: q.quotationNumber,
+          totalAmount: q.totalAmount,
+          status: q.status
+        };
+      });
+    }
+
+    // Map inquiries with quotation data
+    const inquiriesWithQuotation = inquiries.map(inquiry => ({
+      ...inquiry,
+      quotation: inquiry.quotation ? quotationMap[inquiry.quotation.toString()] || null : null
+    }));
 
     res.json({
       success: true,
-      inquiries
+      inquiries: inquiriesWithQuotation
     });
 
   } catch (error) {
@@ -1185,7 +1259,7 @@ router.get('/:id/files/:filename/download', authenticateToken, async (req, res) 
 });
 
 // Upload additional files to existing inquiry
-router.post('/:id/upload', authenticateToken, upload.array('files', 100), handleMulterErrors, async (req, res) => {
+router.post('/:id/upload', authenticateToken, upload.array('files'), handleMulterErrors, async (req, res) => {
   try {
     const inquiry = await Inquiry.findOne({
       _id: req.params.id,
