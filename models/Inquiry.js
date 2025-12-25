@@ -92,6 +92,12 @@ const inquirySchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Add indexes for faster queries
+// Note: inquiryNumber already has unique: true which creates an index automatically
+inquirySchema.index({ customer: 1, createdAt: -1 }); // For customer inquiries list
+inquirySchema.index({ status: 1, createdAt: -1 }); // For filtering by status
+inquirySchema.index({ quotation: 1 }); // For quotation lookups
+
 // Generate inquiry number using nomenclature config
 inquirySchema.pre('save', async function() {
   if (this.isNew && !this.inquiryNumber) {

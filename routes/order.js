@@ -12,14 +12,8 @@ const { authenticateToken, requireBackOffice } = require('../middleware/auth');
 // Get customer orders (Customer access)
 router.get('/customer', authenticateToken, async (req, res) => {
   try {
-    // Only allow customers to access their own orders
-    if (req.userRole !== 'customer') {
-      return res.status(403).json({
-        success: false,
-        message: 'Customer access required'
-      });
-    }
-
+    // Allow any authenticated user to access their own orders
+    // Admin/backoffice can access via different routes
     const orders = await Order.find({ customer: req.userId })
       .populate('customer', 'firstName lastName email companyName')
       .populate('quotation', 'quotationNumber createdAt')

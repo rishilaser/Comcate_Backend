@@ -10,6 +10,7 @@ const Notification = require('../models/Notification');
 const Quotation = require('../models/Quotation');
 const { sendInquiryNotification } = require('../services/emailService');
 const { processExcelFile } = require('../services/excelService');
+const { uploadPdfToCloudinary } = require('../services/cloudinaryService');
 const mongoose = require('mongoose');
 const { requireBackOffice } = require('../middleware/auth');
 const websocketService = require('../services/websocketService');
@@ -314,49 +315,129 @@ router.post('/', authenticateToken, upload.array('files', 20), handleMulterError
     }
 
     // Process uploaded files - read into Buffer and save to database
-    console.log('💾 ===== BACKEND: PROCESSING INQUIRY FILES =====');
+    // Only log in development
+    if (process.env.NODE_ENV === 'development') {
+      console.log('💾 ===== BACKEND: PROCESSING INQUIRY FILES =====');
+    }
     const files = [];
     
-    for (const file of req.files) {
-      console.log(`📄 Processing file: ${file.originalname}`);
-      console.log(`   - Path: ${file.path}`);
-      console.log(`   - Size: ${file.size} bytes`);
+    // Process files in parallel for better performance
+    const filePromises = req.files.map(async (file) => {
+      const fileType = path.extname(file.originalname).toLowerCase();
+      const isPdf = fileType === '.pdf';
       
-      // Read file into Buffer for database storage
-      let fileBuffer = null;
-      try {
-        if (fs.existsSync(file.path)) {
-          fileBuffer = fs.readFileSync(file.path);
-          console.log(`   ✅ File read successfully, Buffer size: ${fileBuffer.length} bytes`);
-        } else {
-          console.log(`   ⚠️  File not found at path: ${file.path}`);
-        }
-      } catch (readError) {
-        console.error(`   ❌ Error reading file: ${readError.message}`);
+      // Only log in development
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`📄 Processing file: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(2)} MB) - ${isPdf ? 'PDF → Cloudinary' : 'Other → MongoDB'}`);
       }
       
-      const fileData = {
-        originalName: file.originalname,
-        fileName: file.filename,
-        filePath: file.path, // Keep for backward compatibility
-        fileSize: file.size,
-        fileType: path.extname(file.originalname).toLowerCase(),
-        fileData: fileBuffer, // Store file as binary in database
-        uploadedAt: new Date()
-      };
-      
-      files.push(fileData);
-      
-      // Delete file from filesystem after reading (only if successfully read)
-      if (fileBuffer && fs.existsSync(file.path)) {
+      // If PDF, upload to Cloudinary
+      if (isPdf) {
         try {
-          fs.unlinkSync(file.path);
-          console.log(`   🗑️  File deleted from filesystem: ${file.path}`);
-        } catch (deleteError) {
-          console.error(`   ⚠️  Error deleting file: ${deleteError.message}`);
+          // Read file buffer
+          let fileBuffer = null;
+          if (fs.existsSync(file.path)) {
+            fileBuffer = fs.readFileSync(file.path);
+          }
+          
+          if (!fileBuffer) {
+            throw new Error('Failed to read PDF file');
+          }
+          
+          // Upload to Cloudinary
+          const cloudinaryResult = await uploadPdfToCloudinary(
+            fileBuffer,
+            file.originalname,
+            'inquiries/pdfs'
+          );
+          
+          // Delete file from filesystem after upload
+          if (fs.existsSync(file.path)) {
+            try {
+              fs.unlinkSync(file.path);
+            } catch (deleteError) {
+              if (process.env.NODE_ENV === 'development') {
+                console.error(`   ⚠️  Error deleting file: ${deleteError.message}`);
+              }
+            }
+          }
+          
+          // Return file data with Cloudinary URL (no fileData buffer)
+          return {
+            originalName: file.originalname,
+            fileName: file.filename,
+            filePath: cloudinaryResult.url, // Store Cloudinary URL instead of local path
+            fileSize: file.size,
+            fileType: fileType,
+            cloudinaryUrl: cloudinaryResult.url, // Cloudinary URL
+            cloudinaryPublicId: cloudinaryResult.public_id, // For future deletion
+            fileData: null, // Don't store PDF in MongoDB
+            uploadedAt: new Date()
+          };
+          
+        } catch (cloudinaryError) {
+          console.error(`❌ Error uploading PDF to Cloudinary: ${cloudinaryError.message}`);
+          // Fallback: store in MongoDB if Cloudinary fails
+          let fileBuffer = null;
+          try {
+            if (fs.existsSync(file.path)) {
+              fileBuffer = fs.readFileSync(file.path);
+            }
+          } catch (readError) {
+            console.error(`   ❌ Error reading file: ${readError.message}`);
+          }
+          
+          return {
+            originalName: file.originalname,
+            fileName: file.filename,
+            filePath: file.path,
+            fileSize: file.size,
+            fileType: fileType,
+            fileData: fileBuffer,
+            uploadedAt: new Date()
+          };
         }
+      } else {
+        // For non-PDF files, keep existing behavior (store in MongoDB)
+        let fileBuffer = null;
+        try {
+          if (fs.existsSync(file.path)) {
+            fileBuffer = fs.readFileSync(file.path);
+          }
+        } catch (readError) {
+          if (process.env.NODE_ENV === 'development') {
+            console.error(`   ❌ Error reading file: ${readError.message}`);
+          }
+        }
+        
+        const fileData = {
+          originalName: file.originalname,
+          fileName: file.filename,
+          filePath: file.path, // Keep for backward compatibility
+          fileSize: file.size,
+          fileType: fileType,
+          fileData: fileBuffer, // Store file as binary in database
+          uploadedAt: new Date()
+        };
+        
+        // Delete file from filesystem after reading (only if successfully read)
+        if (fileBuffer && fs.existsSync(file.path)) {
+          try {
+            fs.unlinkSync(file.path);
+          } catch (deleteError) {
+            if (process.env.NODE_ENV === 'development') {
+              console.error(`   ⚠️  Error deleting file: ${deleteError.message}`);
+            }
+          }
+        }
+        
+        return fileData;
       }
-    }
+    });
+    
+    // Wait for all files to be processed
+    const processedFiles = await Promise.all(filePromises);
+    files.push(...processedFiles);
 
     // Process Excel files to extract component data (optimized)
     let excelComponents = [];
@@ -523,19 +604,21 @@ router.post('/', authenticateToken, upload.array('files', 20), handleMulterError
     // Send notifications asynchronously (don't block response)
     setImmediate(async () => {
       try {
-        console.log('=== ATTEMPTING TO SEND INQUIRY EMAIL NOTIFICATION ===');
-        console.log('Inquiry Number:', inquiry.inquiryNumber);
-        console.log('Customer:', inquiry.customer?.email);
-        console.log('Parts count:', inquiry.parts?.length);
-        console.log('Files count:', inquiry.files?.length);
+        if (process.env.NODE_ENV === 'development') {
+          console.log('=== ATTEMPTING TO SEND INQUIRY EMAIL NOTIFICATION ===');
+        }
         
         // Send email notification to back office
         await sendInquiryNotification(inquiry);
-        console.log('✅ Inquiry email notification sent successfully');
+        if (process.env.NODE_ENV === 'development') {
+          console.log('✅ Inquiry email notification sent successfully');
+        }
       } catch (emailError) {
-        console.error('❌ Inquiry notification failed:', emailError);
-        console.error('Error details:', emailError.message);
-        console.error('Stack trace:', emailError.stack);
+        // Always log errors, but keep it minimal in production
+        console.error('❌ Inquiry notification failed:', emailError.message);
+        if (process.env.NODE_ENV === 'development') {
+          console.error('Stack trace:', emailError.stack);
+        }
       }
 
       // Create notification for all back office users
@@ -620,7 +703,9 @@ router.get('/', authenticateToken, async (req, res) => {
     const inquiries = await Inquiry.find(query)
       .sort(sort)
       .populate('customer', 'firstName lastName companyName')
-      .populate('quotation', 'quotationNumber status totalAmount validUntil');
+      .populate('quotation', 'quotationNumber status totalAmount validUntil')
+      .lean() // Use lean for better performance when we don't need full Mongoose documents
+      .select('-files.fileData'); // Exclude fileData from response to reduce payload size
 
     res.json({
       success: true,
@@ -641,7 +726,10 @@ router.get('/admin/all', authenticateToken, requireBackOffice, async (req, res) 
   try {
     const inquiries = await Inquiry.find()
       .sort({ createdAt: -1 })
-      .populate('customer', 'firstName lastName companyName email phoneNumber');
+      .populate('customer', 'firstName lastName companyName email phoneNumber address')
+      .lean() // Use lean for better performance
+      .select('-files.fileData'); // Exclude fileData to reduce payload size
+      // Note: All other fields (parts, deliveryAddress, specialInstructions, expectedDeliveryDate) are included
 
     res.json({
       success: true,
@@ -1087,57 +1175,140 @@ router.post('/:id/upload', authenticateToken, upload.array('files', 20), handleM
     const uploadedFiles = [];
     
     for (const file of req.files) {
+      const fileType = path.extname(file.originalname).toLowerCase();
+      const isPdf = fileType === '.pdf';
+      
       console.log(`📄 Processing file: ${file.originalname}`);
       console.log(`   - Path: ${file.path}`);
       console.log(`   - Size: ${file.size} bytes`);
+      console.log(`   - Type: ${isPdf ? 'PDF → Cloudinary' : 'Other → MongoDB'}`);
       
-      // Read file into Buffer for database storage
-      let fileBuffer = null;
-      try {
-        if (fs.existsSync(file.path)) {
-          fileBuffer = fs.readFileSync(file.path);
-          console.log(`   ✅ File read successfully, Buffer size: ${fileBuffer.length} bytes`);
-        } else {
-          console.log(`   ⚠️  File not found at path: ${file.path}`);
-        }
-      } catch (readError) {
-        console.error(`   ❌ Error reading file: ${readError.message}`);
-      }
-      
-      // Process Excel files to extract component data
-      if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || 
-          file.mimetype === 'application/vnd.ms-excel') {
+      // If PDF, upload to Cloudinary
+      if (isPdf) {
         try {
-          const excelComponents = await processExcelFile(file.path);
-          // Merge with existing parts, avoiding duplicates
-          const existingPartRefs = inquiry.parts.map(part => part.partRef);
-          const newComponents = excelComponents.filter(comp => !existingPartRefs.includes(comp.partRef));
+          // Read file buffer
+          let fileBuffer = null;
+          if (fs.existsSync(file.path)) {
+            fileBuffer = fs.readFileSync(file.path);
+            console.log(`   ✅ File read successfully, Buffer size: ${fileBuffer.length} bytes`);
+          } else {
+            console.log(`   ⚠️  File not found at path: ${file.path}`);
+            continue;
+          }
           
-          inquiry.parts = [...inquiry.parts, ...newComponents];
-        } catch (error) {
-          console.error('Error processing Excel file:', error);
+          // Upload to Cloudinary
+          const cloudinaryResult = await uploadPdfToCloudinary(
+            fileBuffer,
+            file.originalname,
+            'inquiries/pdfs'
+          );
+          
+          // Delete file from filesystem after upload
+          if (fs.existsSync(file.path)) {
+            try {
+              fs.unlinkSync(file.path);
+              console.log(`   🗑️  File deleted from filesystem: ${file.path}`);
+            } catch (deleteError) {
+              console.error(`   ⚠️  Error deleting file: ${deleteError.message}`);
+            }
+          }
+          
+          // Store file data with Cloudinary URL
+          const fileData = {
+            originalName: file.originalname,
+            fileName: file.filename,
+            filePath: cloudinaryResult.url, // Store Cloudinary URL
+            fileSize: file.size,
+            fileType: fileType,
+            cloudinaryUrl: cloudinaryResult.url,
+            cloudinaryPublicId: cloudinaryResult.public_id,
+            fileData: null, // Don't store PDF in MongoDB
+            uploadedAt: new Date()
+          };
+          
+          uploadedFiles.push(fileData);
+          
+        } catch (cloudinaryError) {
+          console.error(`❌ Error uploading PDF to Cloudinary: ${cloudinaryError.message}`);
+          // Fallback: store in MongoDB if Cloudinary fails
+          let fileBuffer = null;
+          try {
+            if (fs.existsSync(file.path)) {
+              fileBuffer = fs.readFileSync(file.path);
+            }
+          } catch (readError) {
+            console.error(`   ❌ Error reading file: ${readError.message}`);
+          }
+          
+          const fileData = {
+            originalName: file.originalname,
+            fileName: file.filename,
+            filePath: file.path,
+            fileSize: file.size,
+            fileType: fileType,
+            fileData: fileBuffer,
+            uploadedAt: new Date()
+          };
+          
+          uploadedFiles.push(fileData);
+          
+          if (fileBuffer && fs.existsSync(file.path)) {
+            try {
+              fs.unlinkSync(file.path);
+            } catch (deleteError) {
+              console.error(`   ⚠️  Error deleting file: ${deleteError.message}`);
+            }
+          }
         }
-      }
-
-      const fileData = {
-        originalName: file.originalname,
-        fileName: file.filename,
-        filePath: file.path, // Keep for backward compatibility
-        fileSize: file.size,
-        fileType: file.mimetype,
-        fileData: fileBuffer, // Store file as binary in database
-        uploadedAt: new Date()
-      };
-
-      uploadedFiles.push(fileData);
-      
-      // Delete file from filesystem after reading (only if successfully read)
-      if (fileBuffer && fs.existsSync(file.path)) {
+      } else {
+        // For non-PDF files, keep existing behavior
+        let fileBuffer = null;
         try {
-          fs.unlinkSync(file.path);
-          console.log(`   🗑️  File deleted from filesystem: ${file.path}`);
-        } catch (deleteError) {
-          console.error(`   ⚠️  Error deleting file: ${deleteError.message}`);
+          if (fs.existsSync(file.path)) {
+            fileBuffer = fs.readFileSync(file.path);
+            console.log(`   ✅ File read successfully, Buffer size: ${fileBuffer.length} bytes`);
+          } else {
+            console.log(`   ⚠️  File not found at path: ${file.path}`);
+          }
+        } catch (readError) {
+          console.error(`   ❌ Error reading file: ${readError.message}`);
+        }
+        
+        // Process Excel files to extract component data
+        if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || 
+            file.mimetype === 'application/vnd.ms-excel') {
+          try {
+            const excelComponents = await processExcelFile(file.path);
+            // Merge with existing parts, avoiding duplicates
+            const existingPartRefs = inquiry.parts.map(part => part.partRef);
+            const newComponents = excelComponents.filter(comp => !existingPartRefs.includes(comp.partRef));
+            
+            inquiry.parts = [...inquiry.parts, ...newComponents];
+          } catch (error) {
+            console.error('Error processing Excel file:', error);
+          }
+        }
+
+        const fileData = {
+          originalName: file.originalname,
+          fileName: file.filename,
+          filePath: file.path, // Keep for backward compatibility
+          fileSize: file.size,
+          fileType: file.mimetype,
+          fileData: fileBuffer, // Store file as binary in database
+          uploadedAt: new Date()
+        };
+
+        uploadedFiles.push(fileData);
+        
+        // Delete file from filesystem after reading (only if successfully read)
+        if (fileBuffer && fs.existsSync(file.path)) {
+          try {
+            fs.unlinkSync(file.path);
+            console.log(`   🗑️  File deleted from filesystem: ${file.path}`);
+          } catch (deleteError) {
+            console.error(`   ⚠️  Error deleting file: ${deleteError.message}`);
+          }
         }
       }
     }

@@ -2,6 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
+const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
@@ -24,6 +25,19 @@ const { ensureUploadsDirectories, getUploadsBasePath, verifyUploadsPermissions }
 const uploadsDir = ensureUploadsDirectories();
 verifyUploadsPermissions();
 console.log('📁 Uploads base path:', uploadsDir);
+
+// Compression middleware - compress all responses for faster transfer
+app.use(compression({
+  level: 6, // Balance between compression and CPU usage
+  filter: (req, res) => {
+    // Don't compress if client doesn't support it
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    // Use compression for all text-based responses
+    return compression.filter(req, res);
+  }
+}));
 
 // Security middleware with CSP configuration
 app.use(helmet({
@@ -91,6 +105,17 @@ if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
 app.use(express.json({ limit: '500mb' })); // Increased to handle multiple large PDFs
 app.use(express.urlencoded({ extended: true, limit: '500mb' })); // Increased to handle multiple large PDFs
 
+// Add response caching headers for static and API responses
+app.use((req, res, next) => {
+  // Cache API responses for 30 seconds (GET requests only)
+  if (req.method === 'GET' && req.path.startsWith('/api/')) {
+    res.set('Cache-Control', 'private, max-age=30');
+  }
+  // Add ETag support
+  res.set('ETag', 'W/"' + Date.now() + '"');
+  next();
+});
+
 // ✅ VPS-Ready: Static file serving with proper headers
 app.use('/uploads', (req, res, next) => {
   // Set proper CORS headers for file access
@@ -155,8 +180,13 @@ const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://abhishekm:ouRpXr0E
 
 mongoose.connect(MONGODB_URI, {
   // Modern MongoDB driver options
-  serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
+  serverSelectionTimeoutMS: 30000, // Keep trying to send operations for 30 seconds
   socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+  connectTimeoutMS: 30000, // Connection timeout
+  maxPoolSize: 10, // Maximum number of connections in the connection pool
+  minPoolSize: 2, // Minimum number of connections in the connection pool
+  retryWrites: true, // Retry write operations on network errors
+  retryReads: true, // Retry read operations on network errors
 })
 .then(() => {
   
@@ -181,6 +211,7 @@ mongoose.connect(MONGODB_URI, {
   const zipExtractRoutes = require('./routes/zipExtract');
   const dashboardRoutes = require('./routes/dashboard');
   const analyticsRoutes = require('./routes/analytics');
+  const uploadRoutes = require('./routes/upload');
   
   // Use routes
   app.use('/api/auth', authRoutes);
@@ -196,6 +227,7 @@ mongoose.connect(MONGODB_URI, {
   app.use('/api/inquiry', zipExtractRoutes);
   app.use('/api/dashboard', dashboardRoutes);
   app.use('/api/analytics', analyticsRoutes);
+  app.use('/api', uploadRoutes);
   
   // Error handling middleware (must be last)
   const errorHandler = require('./middleware/errorHandler');
@@ -207,12 +239,16 @@ mongoose.connect(MONGODB_URI, {
   // Initialize WebSocket service
   websocketService.initialize(server);
   
+  // Test Cloudinary Connection
+  const { testConnection } = require('./config/cloudinary');
+  testConnection();
+  
   server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`WebSocket server running on /ws`);
-    console.log(`Uploads directory: ${uploadsDir}`);
-    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`MongoDB URI: ${MONGODB_URI}`);
+    console.log(`\n🚀 Server running on port ${PORT}`);
+    console.log(`📡 WebSocket server running on /ws`);
+    console.log(`📁 Uploads directory: ${uploadsDir}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🗄️  MongoDB URI: ${MONGODB_URI}\n`);
   });
 })
 .catch((error) => {

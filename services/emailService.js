@@ -13,10 +13,14 @@ const createTransporter = () => {
   console.log('SMTP_FROM:', process.env.SMTP_FROM || 'noreply@247cutbend.com');
   console.log('BACKOFFICE_EMAIL:', process.env.BACKOFFICE_EMAIL || 'backoffice@247cutbend.com');
   
-  // Check if SMTP configuration is available
-  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+  // Check if SMTP configuration is available and not placeholder values
+  const hasUser = process.env.SMTP_USER && process.env.SMTP_USER !== 'your-email@gmail.com';
+  const hasPass = process.env.SMTP_PASS && process.env.SMTP_PASS !== 'your-app-password-here';
+  
+  if (!hasUser || !hasPass) {
     console.warn('⚠️ SMTP configuration missing. Email service will be disabled.');
     console.warn('Please configure SMTP_USER and SMTP_PASS in .env file');
+    console.warn('For Gmail: Enable 2FA and generate App Password from: https://myaccount.google.com/apppasswords');
     return null;
   }
   
@@ -100,13 +104,6 @@ const sendWelcomeEmail = async (email, firstName) => {
             </ul>
             
             <p>If you have any questions, feel free to reach out to our support team.</p>
-            
-            <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}" 
-                 style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px;">
-                Get Started
-              </a>
-            </div>
           </div>
           
           <div style="background-color: #f5f5f5; padding: 20px; text-align: center; font-size: 12px; color: #666;">
@@ -473,10 +470,6 @@ const sendInquiryNotification = async (inquiry) => {
                   ${attachments.slice(0, 5).map(att => `<li>${att.filename}</li>`).join('')}
                   ${attachments.length > 5 ? `<li><em>... and ${attachments.length - 5} more files</em></li>` : ''}
                 </ul>
-                
-                // <div style="margin-top: 15px; padding: 12px; background-color: #e8f5e9; border-left: 3px solid #4CAF50; color: #2e7d32; font-size: 14px; border-radius: 4px;">
-                //   <strong>💡 Quick Access:</strong> Download all ${attachments.length + 1} files at once using Gmail's "Download all" button, or download the Excel file directly for consolidated data.
-                // </div>
               </div>
             </div>
           </div>
@@ -607,16 +600,7 @@ const sendQuotationEmail = async (quotation) => {
             </p>
             ` : ''}
             
-            <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/quotations/${quotation._id}" 
-                 style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin-right: 10px;">
-                 View Quotation
-              </a>
-              <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/quotations/${quotation._id}/accept" 
-                 style="background-color: #2196F3; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px;">
-                 Accept Quotation
-              </a>
-            </div>
+            <p style="margin-top: 30px;">Please log in to your account to view and respond to this quotation.</p>
             
             <p style="margin-top: 30px;">If you have any questions, please don't hesitate to contact us.</p>
           </div>
@@ -697,16 +681,11 @@ const sendOrderConfirmation = async (order) => {
                 <li>Your order is now in production</li>
                 <li>We will keep you updated on the progress</li>
                 <li>You will receive notifications for each milestone</li>
-                <li>Track your order using the button below</li>
+                <li>Log in to your account to track order status</li>
               </ul>
             </div>
             
-            <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/order/${order._id}/tracking" 
-                 style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
-                Track Your Order
-              </a>
-            </div>
+            <p style="margin-top: 30px;">Please log in to your account to track your order status.</p>
             
             <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
               <p style="font-size: 14px; color: #666;">
@@ -778,12 +757,7 @@ const sendDispatchNotification = async (order) => {
             <p><strong>Dispatched Date:</strong> ${order.dispatch && order.dispatch.dispatchedAt ? new Date(order.dispatch.dispatchedAt).toLocaleDateString() : 'N/A'}</p>
             <p><strong>Estimated Delivery:</strong> ${order.dispatch && order.dispatch.estimatedDelivery ? new Date(order.dispatch.estimatedDelivery).toLocaleDateString() : 'N/A'}</p>
             
-            <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/orders/${order._id}/tracking" 
-                 style="background-color: #2196F3; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px;">
-                Track Order
-              </a>
-            </div>
+            <p style="margin-top: 30px;">Please log in to your account to track your order.</p>
           </div>
         </div>
       `
@@ -841,12 +815,7 @@ const sendPaymentConfirmation = async (order) => {
             <p>2. Set production timeline</p>
             <p>3. Begin manufacturing process</p>
             
-            <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/backoffice" 
-                 style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px;">
-                Manage Order
-              </a>
-            </div>
+            <p style="margin-top: 30px;">Please log in to the back office to manage this order.</p>
           </div>
         </div>
       `
@@ -902,12 +871,7 @@ const sendDeliveryConfirmation = async (order) => {
             <h3>Thank You!</h3>
             <p>We appreciate your business and hope you're satisfied with your order. If you have any questions or need assistance, please don't hesitate to contact us.</p>
             
-            <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/inquiries/new" 
-                 style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px;">
-                Place New Order
-              </a>
-            </div>
+            <p style="margin-top: 30px;">Thank you for choosing 247 CutBend. We look forward to serving you again.</p>
           </div>
         </div>
       `
@@ -979,16 +943,11 @@ const sendDeliveryTimeNotification = async (order) => {
                 <li>Your order is currently in production</li>
                 <li>We will keep you updated on any changes</li>
                 <li>You will receive a notification when it's ready for dispatch</li>
-                <li>Track your order using the button below</li>
+                <li>Log in to your account to track order status</li>
               </ul>
             </div>
             
-            <div style="text-align: center; margin-top: 30px;">
-              <a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/order/${order._id}/tracking" 
-                 style="background-color: #FF9800; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
-                Track Your Order
-              </a>
-            </div>
+            <p style="margin-top: 30px;">Please log in to your account to track your order.</p>
             
             <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
               <p style="font-size: 14px; color: #666;">

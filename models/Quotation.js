@@ -167,8 +167,7 @@ quotationSchema.methods.toJSON = function() {
 };
 
 // Index for better query performance
-quotationSchema.index({ inquiryId: 1 });
-quotationSchema.index({ quotationNumber: 1 });
+// Note: inquiryId and quotationNumber already have unique: true which creates indexes automatically
 quotationSchema.index({ 'customerInfo.email': 1 });
 quotationSchema.index({ status: 1 });
 quotationSchema.index({ createdAt: -1 });

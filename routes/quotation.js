@@ -11,6 +11,7 @@ const pdfService = require('../services/pdfService');
 const Quotation = require('../models/Quotation');
 const Inquiry = require('../models/Inquiry');
 const { getQuotationsPath, ensureUploadsDirectories } = require('../config/uploadConfig');
+const { uploadPdfToCloudinary } = require('../services/cloudinaryService');
 
 // ✅ VPS-Ready: Ensure uploads directory exists before configuring multer
 ensureUploadsDirectories();
@@ -500,20 +501,60 @@ router.post('/upload', [
     }
     console.log('   ✅ Valid PDF header detected');
     
+    // Upload PDF to Cloudinary
+    console.log('📤 ===== BACKEND: UPLOADING PDF TO CLOUDINARY =====');
+    let cloudinaryUrl = null;
+    let cloudinaryPublicId = null;
+    
+    try {
+      // Read file buffer
+      const fileBuffer = fs.readFileSync(req.file.path);
+      
+      // Upload to Cloudinary
+      const cloudinaryResult = await uploadPdfToCloudinary(
+        fileBuffer,
+        req.file.originalname,
+        'quotations'
+      );
+      
+      cloudinaryUrl = cloudinaryResult.url;
+      cloudinaryPublicId = cloudinaryResult.public_id;
+      
+      console.log('✅ PDF uploaded to Cloudinary successfully!');
+      console.log('   - Cloudinary URL:', cloudinaryUrl);
+      console.log('   - Public ID:', cloudinaryPublicId);
+      
+      // Delete file from disk after successful upload
+      try {
+        fs.unlinkSync(req.file.path);
+        console.log('   🗑️  Local file deleted after Cloudinary upload');
+      } catch (deleteError) {
+        console.error('   ⚠️  Error deleting local file:', deleteError.message);
+      }
+      
+    } catch (cloudinaryError) {
+      console.error('❌ Error uploading PDF to Cloudinary:', cloudinaryError.message);
+      // Fallback: keep file on disk if Cloudinary fails
+      console.log('⚠️  Falling back to disk storage');
+      cloudinaryUrl = null;
+    }
+    
     const pdfFilename = req.file.filename;
-    console.log('✅ PDF File Validated Successfully:');
+    console.log('✅ PDF File Processed Successfully:');
     console.log('   - Filename:', pdfFilename);
-    console.log('   - File Path:', req.file.path);
     console.log('   - File Size:', fileStats.size, 'bytes');
+    console.log('   - Storage:', cloudinaryUrl ? 'Cloudinary' : 'Disk (fallback)');
 
-    // ✅ Store only filename in database (file stays on disk)
+    // ✅ Store Cloudinary URL in database (or filename as fallback)
     const quotationData = {
       inquiryId: inquiryId.toString(),
       customerInfo: parsedCustomerInfo,
       totalAmount: parseFloat(totalAmount),
-      quotationPdf: pdfFilename, // Store filename only - file is on disk
-      quotationPdfFilename: pdfFilename, // Store original filename
-      // Note: quotationPdfData (Buffer) is deprecated - files are stored on disk
+      quotationPdf: cloudinaryUrl || pdfFilename, // Store Cloudinary URL or filename
+      quotationPdfFilename: req.file.originalname, // Store original filename
+      quotationPdfCloudinaryUrl: cloudinaryUrl, // Store Cloudinary URL separately
+      quotationPdfCloudinaryPublicId: cloudinaryPublicId, // For future deletion
+      // Note: quotationPdfData (Buffer) is deprecated - files are stored on Cloudinary
       items: [],
       status: 'draft',
       validUntil: validUntil ? new Date(validUntil) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
@@ -524,33 +565,24 @@ router.post('/upload', [
 
     console.log('💾 ===== BACKEND: PREPARING DATABASE SAVE =====');
     console.log('📦 Quotation Data Prepared:');
-    console.log('   - quotationPdf (filename):', quotationData.quotationPdf);
-    console.log('   - quotationPdfFilename:', quotationData.quotationPdfFilename);
-    console.log('   - File stored on disk at:', req.file.path);
+    console.log('   - quotationPdf:', quotationData.quotationPdf);
+    console.log('   - quotationPdfCloudinaryUrl:', quotationData.quotationPdfCloudinaryUrl || 'N/A');
+    console.log('   - Storage:', cloudinaryUrl ? 'Cloudinary ✅' : 'Disk (fallback)');
 
-    // Save quotation to database (only filename, not file data)
+    // Save quotation to database
     console.log('💾 ===== BACKEND: SAVING TO DATABASE =====');
-    console.log('💾 Saving quotation with PDF filename to MongoDB (file stored on disk)...');
+    console.log('💾 Saving quotation with PDF URL to MongoDB...');
     const savedQuotation = await Quotation.create(quotationData);
     console.log('✅ Quotation Saved Successfully:');
     console.log('   - Quotation ID:', savedQuotation._id);
     console.log('   - Quotation Number:', savedQuotation.quotationNumber);
-    console.log('   - Quotation PDF filename:', savedQuotation.quotationPdf);
-    console.log('   - PDF file location: /uploads/quotations/' + savedQuotation.quotationPdf);
+    console.log('   - Quotation PDF:', savedQuotation.quotationPdf);
+    console.log('   - PDF Storage:', cloudinaryUrl ? 'Cloudinary ✅' : 'Disk');
     
-    // Verify file exists on disk (VPS-compatible path)
-    console.log('🔍 ===== BACKEND: VERIFYING FILE STORAGE =====');
-    const filePath = path.join(getQuotationsPath(), savedQuotation.quotationPdf);
-    const fileExists = fs.existsSync(filePath);
-    console.log('   - File exists on disk:', fileExists);
-    if (fileExists) {
-      const stats = fs.statSync(filePath);
-      console.log('   - File size:', stats.size, 'bytes');
-      console.log('   - File size (MB):', (stats.size / (1024 * 1024)).toFixed(2), 'MB');
-      console.log('   ✅ PDF file successfully stored on disk!');
-      console.log('   ✅ File accessible at: /uploads/quotations/' + savedQuotation.quotationPdf);
+    if (cloudinaryUrl) {
+      console.log('   ✅ PDF accessible at Cloudinary URL:', cloudinaryUrl);
     } else {
-      console.log('   ⚠️  WARNING: File not found on disk after save!');
+      console.log('   ⚠️  PDF stored on disk at: /uploads/quotations/' + pdfFilename);
     }
     
     console.log('📄 ===== BACKEND: QUOTATION PDF UPLOAD COMPLETE =====');
@@ -789,7 +821,14 @@ router.get('/:inquiryId', authenticateToken, async (req, res) => {
           };
         }
       } catch (error) {
-        console.error('Error fetching inquiry for quotation:', quotation._id, error);
+        // Only log timeout errors in development, handle gracefully
+        if (error.name === 'MongoNetworkTimeoutError' || error.name === 'MongooseServerSelectionError') {
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('MongoDB timeout fetching inquiry for quotation:', quotation._id);
+          }
+        } else if (process.env.NODE_ENV === 'development') {
+          console.error('Error fetching inquiry for quotation:', quotation._id, error.message);
+        }
         quotationObj.inquiry = null;
       }
 
@@ -1725,30 +1764,95 @@ router.put('/:id/upload-pdf', [
       });
     }
 
-    // Delete old PDF file from filesystem if exists (VPS-compatible)
-    if (quotation.quotationPdf) {
-      const oldPdfPath = path.join(getQuotationsPath(), quotation.quotationPdf);
-      if (fs.existsSync(oldPdfPath) && oldPdfPath !== req.file.path) {
+    // Upload PDF to Cloudinary
+    console.log('📤 Uploading PDF to Cloudinary...');
+    let cloudinaryUrl = null;
+    let cloudinaryPublicId = null;
+    
+    try {
+      // Read file buffer
+      const fileBuffer = fs.readFileSync(req.file.path);
+      
+      // Upload to Cloudinary
+      const cloudinaryResult = await uploadPdfToCloudinary(
+        fileBuffer,
+        req.file.originalname,
+        'quotations'
+      );
+      
+      cloudinaryUrl = cloudinaryResult.url;
+      cloudinaryPublicId = cloudinaryResult.public_id;
+      
+      console.log('✅ PDF uploaded to Cloudinary successfully!');
+      console.log('   - Cloudinary URL:', cloudinaryUrl);
+      
+      // Delete old PDF from Cloudinary if exists
+      if (quotation.quotationPdfCloudinaryPublicId) {
         try {
-          fs.unlinkSync(oldPdfPath);
-          console.log('Old PDF file deleted:', oldPdfPath);
-        } catch (unlinkError) {
-          console.warn('Could not delete old PDF file:', unlinkError);
+          const { deletePdfFromCloudinary } = require('../services/cloudinaryService');
+          await deletePdfFromCloudinary(quotation.quotationPdfCloudinaryPublicId);
+        } catch (deleteError) {
+          console.warn('Could not delete old PDF from Cloudinary:', deleteError.message);
+        }
+      }
+      
+      // Delete old PDF file from filesystem if exists (VPS-compatible)
+      if (quotation.quotationPdf && !quotation.quotationPdf.startsWith('http')) {
+        const oldPdfPath = path.join(getQuotationsPath(), quotation.quotationPdf);
+        if (fs.existsSync(oldPdfPath) && oldPdfPath !== req.file.path) {
+          try {
+            fs.unlinkSync(oldPdfPath);
+            console.log('Old PDF file deleted from disk:', oldPdfPath);
+          } catch (unlinkError) {
+            console.warn('Could not delete old PDF file:', unlinkError);
+          }
+        }
+      }
+      
+      // Delete new file from disk after successful upload
+      try {
+        fs.unlinkSync(req.file.path);
+        console.log('   🗑️  Local file deleted after Cloudinary upload');
+      } catch (deleteError) {
+        console.error('   ⚠️  Error deleting local file:', deleteError.message);
+      }
+      
+    } catch (cloudinaryError) {
+      console.error('❌ Error uploading PDF to Cloudinary:', cloudinaryError.message);
+      // Fallback: keep file on disk if Cloudinary fails
+      console.log('⚠️  Falling back to disk storage');
+      cloudinaryUrl = null;
+      
+      // Delete old PDF file from filesystem if exists
+      if (quotation.quotationPdf && !quotation.quotationPdf.startsWith('http')) {
+        const oldPdfPath = path.join(getQuotationsPath(), quotation.quotationPdf);
+        if (fs.existsSync(oldPdfPath) && oldPdfPath !== req.file.path) {
+          try {
+            fs.unlinkSync(oldPdfPath);
+            console.log('Old PDF file deleted:', oldPdfPath);
+          } catch (unlinkError) {
+            console.warn('Could not delete old PDF file:', unlinkError);
+          }
         }
       }
     }
 
-    // ✅ Update quotation with filename only (file stays on disk)
-    quotation.quotationPdf = pdfFilename; // Store filename - file is on disk
-    quotation.quotationPdfFilename = pdfFilename; // Store original filename
-    // Note: quotationPdfData (Buffer) is deprecated - files are stored on disk
+    // ✅ Update quotation with Cloudinary URL (or filename as fallback)
+    quotation.quotationPdf = cloudinaryUrl || pdfFilename; // Store Cloudinary URL or filename
+    quotation.quotationPdfFilename = req.file.originalname; // Store original filename
+    quotation.quotationPdfCloudinaryUrl = cloudinaryUrl; // Store Cloudinary URL separately
+    quotation.quotationPdfCloudinaryPublicId = cloudinaryPublicId; // For future deletion
+    // Note: quotationPdfData (Buffer) is deprecated - files are stored on Cloudinary
     quotation.updatedAt = new Date();
     await quotation.save();
 
-    console.log('Quotation PDF updated:', pdfFilename);
-    console.log('File stored on disk at:', req.file.path);
-
-    console.log('Quotation PDF updated:', req.file.filename);
+    console.log('✅ Quotation PDF updated successfully!');
+    console.log('   - Storage:', cloudinaryUrl ? 'Cloudinary ✅' : 'Disk (fallback)');
+    if (cloudinaryUrl) {
+      console.log('   - Cloudinary URL:', cloudinaryUrl);
+    } else {
+      console.log('   - File stored on disk at:', req.file.path);
+    }
 
     res.json({
       success: true,

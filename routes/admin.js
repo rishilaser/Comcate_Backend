@@ -832,4 +832,94 @@ router.put('/nomenclature', authenticateToken, requireBackOffice, [
   }
 });
 
+// Get settings (Admin only)
+router.get('/settings', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const Settings = require('../models/Settings');
+    const settings = await Settings.getSettings();
+    
+    res.json({
+      success: true,
+      settings: {
+        backOfficeEmails: settings?.backOfficeEmails || [],
+        backOfficeMobileNumbers: settings?.backOfficeMobileNumbers || []
+      }
+    });
+  } catch (error) {
+    console.error('Get settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Update settings (Admin only)
+router.put('/settings', authenticateToken, requireAdmin, [
+  body('backOfficeEmails').optional().isArray(),
+  body('backOfficeMobileNumbers').optional().isArray()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const Settings = require('../models/Settings');
+    let settings = await Settings.findOne();
+    
+    if (!settings) {
+      // Create new settings with defaults if arrays are empty
+      const emails = req.body.backOfficeEmails && req.body.backOfficeEmails.length > 0 
+        ? req.body.backOfficeEmails 
+        : ['backoffice1@example.com', 'backoffice2@example.com', 'backoffice3@example.com', 'backoffice4@example.com'];
+      const numbers = req.body.backOfficeMobileNumbers && req.body.backOfficeMobileNumbers.length > 0
+        ? req.body.backOfficeMobileNumbers
+        : ['+91-0000000000', '+91-1111111111'];
+      
+      settings = new Settings({
+        backOfficeEmails: emails,
+        backOfficeMobileNumbers: numbers,
+        updatedBy: req.userId
+      });
+    } else {
+      // Update existing settings, but ensure minimum requirements
+      if (req.body.backOfficeEmails !== undefined) {
+        settings.backOfficeEmails = req.body.backOfficeEmails.length >= 4 
+          ? req.body.backOfficeEmails 
+          : [...req.body.backOfficeEmails, ...Array(4 - req.body.backOfficeEmails.length).fill('')];
+      }
+      if (req.body.backOfficeMobileNumbers !== undefined) {
+        settings.backOfficeMobileNumbers = req.body.backOfficeMobileNumbers.length >= 2
+          ? req.body.backOfficeMobileNumbers
+          : [...req.body.backOfficeMobileNumbers, ...Array(2 - req.body.backOfficeMobileNumbers.length).fill('')];
+      }
+      settings.updatedBy = req.userId;
+      settings.updatedAt = new Date();
+    }
+    
+    await settings.save();
+
+    res.json({
+      success: true,
+      message: 'Settings updated successfully',
+      settings: {
+        backOfficeEmails: settings.backOfficeEmails,
+        backOfficeMobileNumbers: settings.backOfficeMobileNumbers
+      }
+    });
+  } catch (error) {
+    console.error('Update settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;
