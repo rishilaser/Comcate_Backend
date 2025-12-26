@@ -322,14 +322,15 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
       });
     }
 
-    // Process uploaded files - read into Buffer and save to database
+    // Process uploaded files - OPTIMIZED for fast response
     // Only log in development
     if (process.env.NODE_ENV === 'development') {
       console.log('💾 ===== BACKEND: PROCESSING INQUIRY FILES =====');
     }
     const files = [];
     
-    // OPTIMIZED: Process files quickly - store PDFs temporarily, upload to Cloudinary async
+    // OPTIMIZED: Process files quickly - don't read into memory before response
+    // Store file metadata only, read file data async after response
     const filePromises = req.files.map(async (file) => {
       const fileType = path.extname(file.originalname).toLowerCase();
       const isPdf = fileType === '.pdf';
@@ -356,44 +357,23 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
           _isPdf: true
         };
       } else {
-        // For non-PDF files, keep existing behavior (store in MongoDB)
-        let fileBuffer = null;
-        try {
-          if (fs.existsSync(file.path)) {
-            fileBuffer = fs.readFileSync(file.path);
-          }
-        } catch (readError) {
-          if (process.env.NODE_ENV === 'development') {
-            console.error(`   ❌ Error reading file: ${readError.message}`);
-          }
-        }
-        
-        const fileData = {
+        // OPTIMIZED: For non-PDF files, store metadata only (read file data async after response)
+        // This makes response much faster - file reading happens async
+        return {
           originalName: file.originalname,
           fileName: file.filename,
-          filePath: file.path, // Keep for backward compatibility
+          filePath: file.path, // Keep path for async reading
           fileSize: file.size,
           fileType: fileType,
-          fileData: fileBuffer, // Store file as binary in database
-          uploadedAt: new Date()
+          fileData: null, // Will be read async after response
+          uploadedAt: new Date(),
+          _tempPath: file.path, // Mark for async file reading
+          _needsFileData: true
         };
-        
-        // Delete file from filesystem after reading (only if successfully read)
-        if (fileBuffer && fs.existsSync(file.path)) {
-          try {
-            fs.unlinkSync(file.path);
-          } catch (deleteError) {
-            if (process.env.NODE_ENV === 'development') {
-              console.error(`   ⚠️  Error deleting file: ${deleteError.message}`);
-            }
-          }
-        }
-        
-        return fileData;
       }
     });
     
-    // Wait for all files to be processed
+    // Wait for all files metadata to be processed (fast - no file reading)
     const processedFiles = await Promise.all(filePromises);
     files.push(...processedFiles);
 
@@ -476,7 +456,7 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
 
     // OPTIMIZED: Create inquiry with cleaned files (remove temp properties)
     const cleanedFiles = files.map(f => {
-      const { _tempPath, _isPdf, ...fileData } = f;
+      const { _tempPath, _isPdf, _needsFileData, ...fileData } = f;
       return fileData;
     });
 
@@ -489,7 +469,7 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
       expectedDeliveryDate: expectedDeliveryDate ? new Date(expectedDeliveryDate) : null
     });
 
-    // Save inquiry quickly (without waiting for Cloudinary)
+    // OPTIMIZED: Save inquiry quickly (without reading file data into memory)
     await inquiry.save();
 
     // Send response immediately to user (before any async operations)
@@ -512,7 +492,8 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
           const uploadPromises = pdfFilesToUpload.map(async (fileData) => {
             try {
               if (fs.existsSync(fileData._tempPath)) {
-                const fileBuffer = fs.readFileSync(fileData._tempPath);
+                // Use async file reading (non-blocking)
+                const fileBuffer = await fs.promises.readFile(fileData._tempPath);
                 const cloudinaryResult = await uploadPdfToCloudinary(
                   fileBuffer,
                   fileData.originalName,
@@ -531,10 +512,12 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
                   }
                 );
                 
-                // Delete temp file
+                // Delete temp file (async)
                 try {
-                  fs.unlinkSync(fileData._tempPath);
-                } catch (e) {}
+                  await fs.promises.unlink(fileData._tempPath);
+                } catch (e) {
+                  // Ignore delete errors
+                }
               }
             } catch (error) {
               console.error(`Error uploading PDF ${fileData.originalName} to Cloudinary:`, error.message);
@@ -548,26 +531,102 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
       });
     }
 
+    // OPTIMIZED: Read non-PDF file data asynchronously (after response)
+    const nonPdfFilesToProcess = files.filter(f => f._needsFileData && f._tempPath);
+    if (nonPdfFilesToProcess.length > 0) {
+      setImmediate(async () => {
+        try {
+          const fileReadPromises = nonPdfFilesToProcess.map(async (fileData) => {
+            try {
+              if (fs.existsSync(fileData._tempPath)) {
+                // Use async file reading (non-blocking)
+                const fileBuffer = await fs.promises.readFile(fileData._tempPath);
+                
+                // Update inquiry with file data
+                await Inquiry.updateOne(
+                  { _id: inquiry._id, 'files.fileName': fileData.fileName },
+                  {
+                    $set: {
+                      'files.$.fileData': fileBuffer
+                    }
+                  }
+                );
+                
+                // Delete temp file after reading
+                try {
+                  await fs.promises.unlink(fileData._tempPath);
+                } catch (e) {
+                  // Ignore delete errors
+                }
+              }
+            } catch (error) {
+              console.error(`Error reading file ${fileData.originalName}:`, error.message);
+            }
+          });
+          
+          await Promise.all(fileReadPromises);
+        } catch (error) {
+          console.error('Error in async file reading:', error);
+        }
+      });
+    }
+
     // OPTIMIZED: Process Excel files asynchronously (after response)
     if (excelFiles.length > 0) {
       setImmediate(async () => {
         try {
+          // First, read Excel file data from inquiry (after it's been saved)
+          const inquiryWithFiles = await Inquiry.findById(inquiry._id).select('files');
           const excelPromises = excelFiles.map(async (excelFile) => {
             try {
-              if (!excelFile.fileData) return [];
+              // Find the file in the inquiry
+              const savedFile = inquiryWithFiles.files.find(f => f.fileName === excelFile.fileName);
+              if (!savedFile || !savedFile.fileData) {
+                // If file data not ready yet, wait a bit and try again
+                await new Promise(resolve => setTimeout(resolve, 500));
+                const retryInquiry = await Inquiry.findById(inquiry._id).select('files');
+                const retryFile = retryInquiry.files.find(f => f.fileName === excelFile.fileName);
+                if (!retryFile || !retryFile.fileData) return [];
+                
+                const fileBuffer = retryFile.fileData;
+                const tempPath = path.join(__dirname, '..', 'uploads', 'temp', `excel-${Date.now()}-${Math.random().toString(36).substring(7)}.xlsx`);
+                const tempDir = path.dirname(tempPath);
+                if (!fs.existsSync(tempDir)) {
+                  fs.mkdirSync(tempDir, { recursive: true });
+                }
+                
+                await fs.promises.writeFile(tempPath, fileBuffer);
+                const excelResult = await processExcelFile(tempPath);
+                
+                // Delete temp file after processing
+                if (fs.existsSync(tempPath)) {
+                  await fs.promises.unlink(tempPath);
+                }
+                
+                if (excelResult.success && excelResult.components && excelResult.components.length > 0) {
+                  // Update inquiry with Excel components
+                  await Inquiry.updateOne(
+                    { _id: inquiry._id },
+                    { $push: { parts: { $each: excelResult.components } } }
+                  );
+                }
+                
+                return excelResult.components || [];
+              }
               
+              const fileBuffer = savedFile.fileData;
               const tempPath = path.join(__dirname, '..', 'uploads', 'temp', `excel-${Date.now()}-${Math.random().toString(36).substring(7)}.xlsx`);
               const tempDir = path.dirname(tempPath);
               if (!fs.existsSync(tempDir)) {
                 fs.mkdirSync(tempDir, { recursive: true });
               }
               
-              fs.writeFileSync(tempPath, excelFile.fileData);
+              await fs.promises.writeFile(tempPath, fileBuffer);
               const excelResult = await processExcelFile(tempPath);
               
               // Delete temp file after processing
               if (fs.existsSync(tempPath)) {
-                fs.unlinkSync(tempPath);
+                await fs.promises.unlink(tempPath);
               }
               
               if (excelResult.success && excelResult.components && excelResult.components.length > 0) {
