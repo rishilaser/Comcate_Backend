@@ -12,6 +12,8 @@ const Quotation = require('../models/Quotation');
 const Inquiry = require('../models/Inquiry');
 const { getQuotationsPath, ensureUploadsDirectories } = require('../config/uploadConfig');
 const { uploadPdfToCloudinary } = require('../services/cloudinaryService');
+const axios = require('axios');
+const mongoose = require('mongoose');
 
 // ✅ VPS-Ready: Ensure uploads directory exists before configuring multer
 ensureUploadsDirectories();
@@ -834,6 +836,26 @@ router.get('/id/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     const userId = req.userId;
     
+    // Validate ID parameter
+    if (!id || id === 'undefined' || id === 'null' || id.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid quotation ID provided',
+        receivedId: id,
+        error: 'ID cannot be undefined, null, or empty'
+      });
+    }
+    
+    // Validate MongoDB ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid quotation ID format',
+        receivedId: id,
+        error: 'ID must be a valid MongoDB ObjectId'
+      });
+    }
+    
     // Check if user is admin/backoffice - they can access any quotation
     const isAdmin = ['admin', 'backoffice', 'subadmin'].includes(req.userRole);
 
@@ -1012,6 +1034,26 @@ router.get('/customer/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     const userId = req.userId;
 
+    // Validate ID parameter
+    if (!id || id === 'undefined' || id === 'null' || id.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid quotation ID provided',
+        receivedId: id,
+        error: 'ID cannot be undefined, null, or empty'
+      });
+    }
+    
+    // Validate MongoDB ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid quotation ID format',
+        receivedId: id,
+        error: 'ID must be a valid MongoDB ObjectId'
+      });
+    }
+
     // Find the quotation
     const quotation = await Quotation.findById(id);
     if (!quotation) {
@@ -1145,9 +1187,24 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
     const userId = req.userId;
     const { download } = req.query;
 
+    // Validate ID parameter
+    if (!id || id === 'undefined' || id === 'null' || id.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid quotation ID provided',
+        receivedId: id,
+        error: 'ID cannot be undefined, null, or empty'
+      });
+    }
+
     // Try to find quotation by ID first (if id is a quotation ID)
     // Use lean() to get raw MongoDB document with quotationPdfData Buffer
-    let quotation = await Quotation.findById(id).lean();
+    let quotation = null;
+    
+    // Only try findById if it's a valid ObjectId format
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      quotation = await Quotation.findById(id).lean();
+    }
     
     // If not found, try to find by inquiryId (if id is an inquiry ID)
     if (!quotation) {
@@ -1180,20 +1237,49 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       }
     }
     
+    // Helper function to fetch PDF from Cloudinary and serve it
+    const fetchAndServeCloudinaryPdf = async (cloudinaryUrl) => {
+      try {
+        console.log('☁️  Fetching PDF from Cloudinary:', cloudinaryUrl);
+        const response = await axios.get(cloudinaryUrl, {
+          responseType: 'arraybuffer',
+          timeout: 30000 // 30 second timeout
+        });
+        
+        const pdfBuffer = Buffer.from(response.data);
+        const pdfFileName = `quotation_${quotation.quotationNumber || quotation._id}.pdf`;
+        
+        console.log('✅ PDF fetched from Cloudinary, size:', pdfBuffer.length, 'bytes');
+        
+        // Set headers for PDF viewing
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', download === 'true' 
+          ? `attachment; filename="${pdfFileName}"` 
+          : `inline; filename="${pdfFileName}"`);
+        res.setHeader('Content-Length', pdfBuffer.length);
+        
+        return res.send(pdfBuffer);
+      } catch (error) {
+        console.error('❌ Error fetching PDF from Cloudinary:', error.message);
+        // Fall through to try other methods
+        return null;
+      }
+    };
+
     // ✅ Check Cloudinary URL first (new format)
     if (quotation.quotationPdfCloudinaryUrl) {
       console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY =====');
       console.log('   - Cloudinary URL:', quotation.quotationPdfCloudinaryUrl);
-      // Redirect to Cloudinary URL for viewing
-      return res.redirect(quotation.quotationPdfCloudinaryUrl);
+      const result = await fetchAndServeCloudinaryPdf(quotation.quotationPdfCloudinaryUrl);
+      if (result !== null) return; // Successfully served
     }
     
     // Check if quotationPdf is a Cloudinary URL (starts with http)
     if (quotation.quotationPdf && quotation.quotationPdf.startsWith('http')) {
       console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY (URL format) =====');
       console.log('   - Cloudinary URL:', quotation.quotationPdf);
-      // Redirect to Cloudinary URL for viewing
-      return res.redirect(quotation.quotationPdf);
+      const result = await fetchAndServeCloudinaryPdf(quotation.quotationPdf);
+      if (result !== null) return; // Successfully served
     }
 
     // Helper function to generate PDF
@@ -1232,22 +1318,6 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       return pdfResult;
     };
 
-    // ✅ Check Cloudinary URL first (new format)
-    if (quotation.quotationPdfCloudinaryUrl) {
-      console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY =====');
-      console.log('   - Cloudinary URL:', quotation.quotationPdfCloudinaryUrl);
-      // Redirect to Cloudinary URL for viewing
-      return res.redirect(quotation.quotationPdfCloudinaryUrl);
-    }
-    
-    // Check if quotationPdf is a Cloudinary URL (starts with http)
-    if (quotation.quotationPdf && quotation.quotationPdf.startsWith('http')) {
-      console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY (URL format) =====');
-      console.log('   - Cloudinary URL:', quotation.quotationPdf);
-      // Redirect to Cloudinary URL for viewing
-      return res.redirect(quotation.quotationPdf);
-    }
-    
     // Check if PDF data exists in database (support multiple formats)
     let pdfBuffer = null;
     let pdfFileName = `quotation_${quotation.quotationNumber}.pdf`;
@@ -1353,22 +1423,6 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       console.log('PDF found in database (old format: quotationPdf object)');
     }
 
-    // ✅ Check Cloudinary URL first (new format)
-    if (quotation.quotationPdfCloudinaryUrl) {
-      console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY =====');
-      console.log('   - Cloudinary URL:', quotation.quotationPdfCloudinaryUrl);
-      // Redirect to Cloudinary URL
-      return res.redirect(quotation.quotationPdfCloudinaryUrl);
-    }
-    
-    // Check if quotationPdf is a Cloudinary URL (starts with http)
-    if (quotation.quotationPdf && quotation.quotationPdf.startsWith('http')) {
-      console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY (URL format) =====');
-      console.log('   - Cloudinary URL:', quotation.quotationPdf);
-      // Redirect to Cloudinary URL
-      return res.redirect(quotation.quotationPdf);
-    }
-    
     // ✅ BEST PRACTICE: Check filesystem (old format - backward compatibility) - VPS-compatible
     let pdfPath;
     if (quotation.quotationPdf && !quotation.quotationPdf.startsWith('http')) {
@@ -1531,6 +1585,16 @@ router.get('/:id/pdf/download', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     
+    // Validate ID parameter
+    if (!id || id === 'undefined' || id === 'null' || id.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid quotation ID provided',
+        receivedId: id,
+        error: 'ID cannot be undefined, null, or empty'
+      });
+    }
+    
     console.log('=== QUOTATION PDF DOWNLOAD REQUEST ===');
     console.log('Quotation ID:', id);
     console.log('User ID:', req.userId);
@@ -1541,25 +1605,29 @@ router.get('/:id/pdf/download', authenticateToken, async (req, res) => {
     console.log('Is admin user:', isAdmin);
     
     // Query quotation with quotationPdfData field included (bypass toJSON using lean)
-    let quotation;
-    if (isAdmin) {
-      // Admin users can access any quotation - use lean to get raw document with quotationPdfData
-      quotation = await Quotation.findOne({
-        _id: id
-      }).lean();
-    } else {
-      // Regular users can only access their own quotations
-      // First find the quotation
-      quotation = await Quotation.findOne({
-        _id: id
-      }).lean();
-      
-      if (quotation) {
-        // OPTIMIZED: Verify the quotation belongs to the user (use lean for faster query)
-        const inquiry = await Inquiry.findById(quotation.inquiryId).lean().select('customer');
-        if (!inquiry || inquiry.customer.toString() !== req.userId.toString()) {
-          console.log('Quotation exists but user does not have access. Inquiry customer:', inquiry?.customer);
-          quotation = null;
+    let quotation = null;
+    
+    // Only try to find if it's a valid ObjectId format
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      if (isAdmin) {
+        // Admin users can access any quotation - use lean to get raw document with quotationPdfData
+        quotation = await Quotation.findOne({
+          _id: id
+        }).lean();
+      } else {
+        // Regular users can only access their own quotations
+        // First find the quotation
+        quotation = await Quotation.findOne({
+          _id: id
+        }).lean();
+        
+        if (quotation) {
+          // OPTIMIZED: Verify the quotation belongs to the user (use lean for faster query)
+          const inquiry = await Inquiry.findById(quotation.inquiryId).lean().select('customer');
+          if (!inquiry || inquiry.customer.toString() !== req.userId.toString()) {
+            console.log('Quotation exists but user does not have access. Inquiry customer:', inquiry?.customer);
+            quotation = null;
+          }
         }
       }
     }
@@ -1679,20 +1747,54 @@ router.get('/:id/pdf/download', authenticateToken, async (req, res) => {
       console.log('⚠️  No quotationPdfData in database, trying filesystem...');
     }
     
+    // Helper function to fetch PDF from Cloudinary
+    const fetchCloudinaryPdf = async (cloudinaryUrl) => {
+      try {
+        console.log('☁️  Fetching PDF from Cloudinary:', cloudinaryUrl);
+        const response = await axios.get(cloudinaryUrl, {
+          responseType: 'arraybuffer',
+          timeout: 30000 // 30 second timeout
+        });
+        
+        const fetchedBuffer = Buffer.from(response.data);
+        console.log('✅ PDF fetched from Cloudinary, size:', fetchedBuffer.length, 'bytes');
+        return fetchedBuffer;
+      } catch (error) {
+        console.error('❌ Error fetching PDF from Cloudinary:', error.message);
+        throw error;
+      }
+    };
+
     // Check for Cloudinary URL (new format)
     if (!pdfBuffer && quotation.quotationPdfCloudinaryUrl) {
       console.log('☁️  PDF stored on Cloudinary');
       console.log('   - Cloudinary URL:', quotation.quotationPdfCloudinaryUrl);
-      // Redirect to Cloudinary URL for download
-      return res.redirect(quotation.quotationPdfCloudinaryUrl);
+      try {
+        pdfBuffer = await fetchCloudinaryPdf(quotation.quotationPdfCloudinaryUrl);
+        pdfFileName = `quotation_${quotation.quotationNumber || quotation._id}.pdf`;
+      } catch (error) {
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to fetch PDF from Cloudinary',
+          error: error.message
+        });
+      }
     }
     
     // Check if quotationPdf is a Cloudinary URL (starts with http)
     if (!pdfBuffer && quotation.quotationPdf && quotation.quotationPdf.startsWith('http')) {
       console.log('☁️  PDF stored on Cloudinary (URL format)');
       console.log('   - Cloudinary URL:', quotation.quotationPdf);
-      // Redirect to Cloudinary URL for download
-      return res.redirect(quotation.quotationPdf);
+      try {
+        pdfBuffer = await fetchCloudinaryPdf(quotation.quotationPdf);
+        pdfFileName = `quotation_${quotation.quotationNumber || quotation._id}.pdf`;
+      } catch (error) {
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to fetch PDF from Cloudinary',
+          error: error.message
+        });
+      }
     }
     
     // Fallback to filesystem (old format - backward compatibility)
