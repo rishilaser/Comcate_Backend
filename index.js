@@ -68,6 +68,8 @@ const corsOptions = {
       'http://localhost:3001', // Alternative development port
       'https://247cutbend.in', // Production frontend (without www)
       'https://www.247cutbend.in', // Production frontend (with www)
+      'http://247cutbend.in', // HTTP version (without www)
+      'http://www.247cutbend.in', // HTTP version (with www)
       // 'http://127.0.0.1:3000', // Alternative localhost
       // 'http://127.0.0.1:3001', // Alternative localhost port
       // 'https://komacut-frontend.onrender.com', // Production frontend
@@ -83,12 +85,15 @@ const corsOptions = {
       // Allow all 247cutbend.in subdomains, Render, Netlify, and Vercel subdomains
       callback(null, true);
     } else {
+      console.warn('CORS blocked origin:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Content-Length'],
+  exposedHeaders: ['Content-Length', 'Content-Type'],
+  maxAge: 86400 // 24 hours
 };
 
 // Use more permissive CORS in development
