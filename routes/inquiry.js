@@ -10,7 +10,7 @@ const Notification = require('../models/Notification');
 const Quotation = require('../models/Quotation');
 const { sendInquiryNotification } = require('../services/emailService');
 const { processExcelFile } = require('../services/excelService');
-const { uploadPdfToCloudinary } = require('../services/cloudinaryService');
+// ✅ CLOUDINARY: Import will be done later with other functions
 const mongoose = require('mongoose');
 const { requireBackOffice } = require('../middleware/auth');
 const websocketService = require('../services/websocketService');
@@ -32,39 +32,44 @@ router.get('/health', (req, res) => {
   });
 });
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '..', 'uploads', 'inquiries');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
+// ✅ CLOUDINARY: Use memory storage - ALL files go directly to Cloudinary, NOT local disk
+// Supported file types: PDF, DWG, DXF, ZIP, XLSX, XLS
+const { uploadFileToCloudinary, uploadPdfToCloudinary, isCloudinaryConfigured } = require('../services/cloudinaryService');
 
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = ['.dwg', '.dxf', '.zip', '.pdf', '.xlsx', '.xls'];
-  const ext = path.extname(file.originalname).toLowerCase();
-  
-  if (allowedTypes.includes(ext)) {
-    cb(null, true);
-  } else {
-    cb(new Error('Invalid file type. Only DWG, DXF, ZIP, PDF, XLSX, and XLS files are allowed.'), false);
-  }
+if (isCloudinaryConfigured()) {
+  console.log('✅ CLOUDINARY: Configured for inquiries - All files will be uploaded directly to Cloudinary ☁️');
+}
+
+// Configure multer to use MEMORY storage (not disk) - files go directly to Cloudinary
+const storage = multer.memoryStorage(); // ✅ Store in memory, upload to Cloudinary directly
+
+// Allowed file types
+const allowedFileTypes = {
+  '.pdf': 'application/pdf',
+  '.dwg': 'application/acad',
+  '.dxf': 'application/dxf',
+  '.zip': 'application/zip',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.xls': 'application/vnd.ms-excel'
 };
 
+const allowedExtensions = Object.keys(allowedFileTypes);
+
 const upload = multer({
-  storage: storage,
-  fileFilter: fileFilter,
+  storage: storage, // ✅ Memory storage - no local files
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit per file (all file types)
+    fileSize: 50 * 1024 * 1024, // 50MB limit per file (all file types)
     files: undefined, // Unlimited files
     fieldSize: 10 * 1024 * 1024 // 10MB for text fields
+  },
+  fileFilter: (req, file, cb) => {
+    const fileExtension = path.extname(file.originalname).toLowerCase();
+    
+    if (allowedExtensions.includes(fileExtension)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`File type not allowed. Allowed types: ${allowedExtensions.join(', ')}. Maximum file size is 50MB.`), false);
+    }
   }
 });
 
@@ -330,47 +335,42 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
     }
     const files = [];
     
-    // OPTIMIZED: Process files quickly - don't read into memory before response
-    // Store file metadata only, read file data async after response
+    // ✅ CLOUDINARY: Upload ALL files to Cloudinary immediately (memory storage)
     const filePromises = req.files.map(async (file) => {
-      const fileType = path.extname(file.originalname).toLowerCase();
-      const isPdf = fileType === '.pdf';
+      const fileExtension = path.extname(file.originalname).toLowerCase();
+      const fileType = fileExtension.slice(1).toUpperCase();
       
-      // Validate ALL file types - 5MB limit for all files
-      if (file.size > 5 * 1024 * 1024) {
-        throw new Error(`File "${file.originalname}" exceeds 5MB limit. File size: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+      // Validate ALL file types - 50MB limit for all files
+      if (file.buffer.length > 50 * 1024 * 1024) {
+        throw new Error(`File "${file.originalname}" exceeds 50MB limit. File size: ${(file.buffer.length / 1024 / 1024).toFixed(2)}MB`);
       }
       
-      // If PDF, store file path temporarily (upload to Cloudinary async after response)
-      if (isPdf) {
-        // Store file path temporarily - will upload to Cloudinary async
-        return {
-          originalName: file.originalname,
-          fileName: file.filename,
-          filePath: file.path, // Temporary path - will be replaced with Cloudinary URL
-          fileSize: file.size,
-          fileType: fileType,
-          cloudinaryUrl: null, // Will be set async
-          cloudinaryPublicId: null, // Will be set async
-          fileData: null, // Don't store PDF in MongoDB
-          uploadedAt: new Date(),
-          _tempPath: file.path, // Mark for async Cloudinary upload
-          _isPdf: true
-        };
+      // ✅ Upload ALL files to Cloudinary (not just PDFs)
+      if (isCloudinaryConfigured()) {
+        try {
+          const cloudinaryResult = await uploadFileToCloudinary(
+            file.buffer,
+            file.originalname,
+            'inquiries'
+          );
+          
+          return {
+            originalName: file.originalname,
+            fileName: file.originalname, // Use original name
+            filePath: cloudinaryResult.url, // Cloudinary URL
+            fileSize: file.buffer.length,
+            fileType: fileExtension,
+            cloudinaryUrl: cloudinaryResult.url,
+            cloudinaryPublicId: cloudinaryResult.public_id,
+            fileData: null, // Don't store in MongoDB - it's on Cloudinary
+            uploadedAt: new Date()
+          };
+        } catch (cloudinaryError) {
+          console.error(`❌ Error uploading ${fileType} file to Cloudinary:`, cloudinaryError.message);
+          throw new Error(`Cloudinary upload failed for ${file.originalname}: ${cloudinaryError.message}`);
+        }
       } else {
-        // OPTIMIZED: For non-PDF files, store metadata only (read file data async after response)
-        // This makes response much faster - file reading happens async
-        return {
-          originalName: file.originalname,
-          fileName: file.filename,
-          filePath: file.path, // Keep path for async reading
-          fileSize: file.size,
-          fileType: fileType,
-          fileData: null, // Will be read async after response
-          uploadedAt: new Date(),
-          _tempPath: file.path, // Mark for async file reading
-          _needsFileData: true
-        };
+        throw new Error('Cloudinary is not configured. Please configure Cloudinary in .env file.');
       }
     });
     
@@ -455,11 +455,8 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
     }
 
 
-    // OPTIMIZED: Create inquiry with cleaned files (remove temp properties)
-    const cleanedFiles = files.map(f => {
-      const { _tempPath, _isPdf, _needsFileData, ...fileData } = f;
-      return fileData;
-    });
+    // ✅ CLOUDINARY: All files are already uploaded to Cloudinary - no cleanup needed
+    const cleanedFiles = files; // Files already have Cloudinary URLs
 
     const inquiry = new Inquiry({
       customer: req.userId,
@@ -485,92 +482,8 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
       }
     });
 
-    // OPTIMIZED: Upload PDFs to Cloudinary asynchronously (after response sent)
-    const pdfFilesToUpload = files.filter(f => f._isPdf && f._tempPath);
-    if (pdfFilesToUpload.length > 0) {
-      setImmediate(async () => {
-        try {
-          const uploadPromises = pdfFilesToUpload.map(async (fileData) => {
-            try {
-              if (fs.existsSync(fileData._tempPath)) {
-                // Use async file reading (non-blocking)
-                const fileBuffer = await fs.promises.readFile(fileData._tempPath);
-                const cloudinaryResult = await uploadPdfToCloudinary(
-                  fileBuffer,
-                  fileData.originalName,
-                  'inquiries/pdfs'
-                );
-                
-                // Update inquiry with Cloudinary URL
-                await Inquiry.updateOne(
-                  { _id: inquiry._id, 'files.fileName': fileData.fileName },
-                  {
-                    $set: {
-                      'files.$.filePath': cloudinaryResult.url,
-                      'files.$.cloudinaryUrl': cloudinaryResult.url,
-                      'files.$.cloudinaryPublicId': cloudinaryResult.public_id
-                    }
-                  }
-                );
-                
-                // Delete temp file (async)
-                try {
-                  await fs.promises.unlink(fileData._tempPath);
-                } catch (e) {
-                  // Ignore delete errors
-                }
-              }
-            } catch (error) {
-              console.error(`Error uploading PDF ${fileData.originalName} to Cloudinary:`, error.message);
-            }
-          });
-          
-          await Promise.all(uploadPromises);
-        } catch (error) {
-          console.error('Error in async Cloudinary upload:', error);
-        }
-      });
-    }
-
-    // OPTIMIZED: Read non-PDF file data asynchronously (after response)
-    const nonPdfFilesToProcess = files.filter(f => f._needsFileData && f._tempPath);
-    if (nonPdfFilesToProcess.length > 0) {
-      setImmediate(async () => {
-        try {
-          const fileReadPromises = nonPdfFilesToProcess.map(async (fileData) => {
-            try {
-              if (fs.existsSync(fileData._tempPath)) {
-                // Use async file reading (non-blocking)
-                const fileBuffer = await fs.promises.readFile(fileData._tempPath);
-                
-                // Update inquiry with file data
-                await Inquiry.updateOne(
-                  { _id: inquiry._id, 'files.fileName': fileData.fileName },
-                  {
-                    $set: {
-                      'files.$.fileData': fileBuffer
-                    }
-                  }
-                );
-                
-                // Delete temp file after reading
-                try {
-                  await fs.promises.unlink(fileData._tempPath);
-                } catch (e) {
-                  // Ignore delete errors
-                }
-              }
-            } catch (error) {
-              console.error(`Error reading file ${fileData.originalName}:`, error.message);
-            }
-          });
-          
-          await Promise.all(fileReadPromises);
-        } catch (error) {
-          console.error('Error in async file reading:', error);
-        }
-      });
-    }
+    // ✅ CLOUDINARY: All files are already uploaded to Cloudinary above
+    // No async processing needed - files are stored on Cloudinary, not locally
 
     // OPTIMIZED: Process Excel files asynchronously (after response)
     if (excelFiles.length > 0) {

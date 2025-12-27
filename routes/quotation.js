@@ -10,41 +10,48 @@ const { sendSMS } = require('../services/smsService');
 const pdfService = require('../services/pdfService');
 const Quotation = require('../models/Quotation');
 const Inquiry = require('../models/Inquiry');
-const { getQuotationsPath, ensureUploadsDirectories } = require('../config/uploadConfig');
-const { uploadPdfToCloudinary } = require('../services/cloudinaryService');
+// ✅ CLOUDINARY: No local uploads directory needed - all files go to Cloudinary
+const { uploadFileToCloudinary, uploadPdfToCloudinary, isCloudinaryConfigured } = require('../services/cloudinaryService');
 const axios = require('axios');
 const mongoose = require('mongoose');
 
-// ✅ VPS-Ready: Ensure uploads directory exists before configuring multer
-ensureUploadsDirectories();
+// ✅ CLOUDINARY: Use memory storage - ALL files go directly to Cloudinary, NOT local disk
+// Supported file types: PDF, DWG, DXF, ZIP, XLSX, XLS
 
-// Configure multer for file uploads (VPS-compatible paths)
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    // Use absolute path that works on VPS
-    const uploadPath = getQuotationsPath();
-    if (!fs.existsSync(uploadPath)) {
-      fs.mkdirSync(uploadPath, { recursive: true });
-      console.log('✅ Created quotations upload directory:', uploadPath);
-    }
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, `quotation-${uniqueSuffix}${path.extname(file.originalname)}`);
-  }
-});
+if (isCloudinaryConfigured()) {
+  console.log('✅ CLOUDINARY: Configured - All files will be uploaded directly to Cloudinary ☁️');
+  console.log('   - Supported: PDF, DWG, DXF, ZIP, XLSX, XLS');
+} else {
+  console.warn('⚠️  CLOUDINARY: Not configured - Please set CLOUD_NAME, CLOUD_KEY, and CLOUD_SECRET in .env');
+}
+
+// Configure multer to use MEMORY storage (not disk) - files go directly to Cloudinary
+const storage = multer.memoryStorage(); // ✅ Store in memory, upload to Cloudinary directly
+
+// Allowed file types and their MIME types
+const allowedFileTypes = {
+  '.pdf': 'application/pdf',
+  '.dwg': 'application/acad',
+  '.dxf': 'application/dxf',
+  '.zip': 'application/zip',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.xls': 'application/vnd.ms-excel'
+};
+
+const allowedExtensions = Object.keys(allowedFileTypes);
 
 const upload = multer({
-  storage: storage,
+  storage: storage, // ✅ Memory storage - no local files
   limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB limit for PDFs
+    fileSize: 50 * 1024 * 1024 // 50MB limit for all file types
   },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf') {
+    const fileExtension = path.extname(file.originalname).toLowerCase();
+    
+    if (allowedExtensions.includes(fileExtension)) {
       cb(null, true);
     } else {
-      cb(new Error('Only PDF files are allowed. Maximum file size is 5MB.'), false);
+      cb(new Error(`File type not allowed. Allowed types: ${allowedExtensions.join(', ')}. Maximum file size is 50MB.`), false);
     }
   }
 });
@@ -388,13 +395,12 @@ router.post('/upload', [
     console.log('   - validUntil:', req.body.validUntil);
     console.log('📁 Uploaded File Details:');
     if (req.file) {
-      console.log('   - File Name:', req.file.filename);
       console.log('   - Original Name:', req.file.originalname);
-      console.log('   - File Path:', req.file.path);
-      console.log('   - File Size:', req.file.size, 'bytes');
-      console.log('   - File Size (MB):', (req.file.size / (1024 * 1024)).toFixed(2), 'MB');
+      console.log('   - File Size:', req.file.buffer.length, 'bytes');
+      console.log('   - File Size (MB):', (req.file.buffer.length / (1024 * 1024)).toFixed(2), 'MB');
       console.log('   - MIME Type:', req.file.mimetype);
       console.log('   - Field Name:', req.file.fieldname);
+      console.log('   - Storage: Memory Buffer (direct to Cloudinary)');
     } else {
       console.log('   ⚠️  NO FILE UPLOADED!');
     }
@@ -417,7 +423,7 @@ router.post('/upload', [
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'Quotation PDF file is required'
+        message: 'Quotation file is required (PDF, DWG, DXF, ZIP, XLSX, XLS)'
       });
     }
 
@@ -455,65 +461,87 @@ router.post('/upload', [
       };
     }
 
-    // ✅ BEST PRACTICE: Keep file on disk, store only filename in database
-    console.log('💾 ===== BACKEND: VALIDATING PDF FILE =====');
-    console.log('📂 File Path:', req.file.path);
-    console.log('📂 File Exists?', fs.existsSync(req.file.path));
+    // ✅ CLOUDINARY: Validate file from memory buffer (no disk access)
+    const fileExtension = path.extname(req.file.originalname).toLowerCase();
+    const fileType = fileExtension.slice(1).toUpperCase();
     
-    // Check file stats to validate file
-    const fileStats = fs.statSync(req.file.path);
+    console.log('💾 ===== BACKEND: VALIDATING FILE =====');
+    console.log('📂 Storage: Memory Buffer (direct to Cloudinary)');
     console.log('📊 File Statistics:');
-    console.log('   - File Size (from stats):', fileStats.size, 'bytes');
-    console.log('   - File Size (MB):', (fileStats.size / (1024 * 1024)).toFixed(2), 'MB');
-    console.log('   - Original File Size (from multer):', req.file.size, 'bytes');
+    console.log('   - File Size:', req.file.buffer.length, 'bytes');
+    console.log('   - File Size (MB):', (req.file.buffer.length / (1024 * 1024)).toFixed(2), 'MB');
+    console.log('   - Original Filename:', req.file.originalname);
+    console.log('   - File Type:', fileType);
     
     // Validate file size
-    if (fileStats.size < 100) {
-      console.log('   ⚠️  WARNING: File size is very small (< 100 bytes) - PDF might be corrupted or empty!');
-      // Delete invalid file
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (e) {}
+    if (req.file.buffer.length < 100) {
+      console.log('   ⚠️  WARNING: File size is very small (< 100 bytes) - file might be corrupted or empty!');
       return res.status(400).json({
         success: false,
-        message: 'Invalid PDF file: File size is too small. Please upload a valid PDF file.',
-        fileSize: fileStats.size
+        message: 'Invalid file: File size is too small. Please upload a valid file.',
+        fileSize: req.file.buffer.length
       });
     }
     
-    // Validate PDF header (read first 4 bytes only)
-    const pdfHeaderBuffer = Buffer.alloc(4);
-    const fd = fs.openSync(req.file.path, 'r');
-    fs.readSync(fd, pdfHeaderBuffer, 0, 4, 0);
-    fs.closeSync(fd);
-    const pdfHeader = pdfHeaderBuffer.toString('ascii');
-    
-    console.log('   - PDF Header:', pdfHeader);
-    if (pdfHeader !== '%PDF') {
-      console.log('   ⚠️  WARNING: File does not appear to be a valid PDF! (Header should be "%PDF")');
-      // Delete invalid file
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (e) {}
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid PDF file: File does not have a valid PDF header. Please upload a valid PDF file.',
-        detectedHeader: pdfHeader
-      });
+    // Validate PDF header only for PDF files
+    if (fileExtension === '.pdf') {
+      const pdfHeader = req.file.buffer.slice(0, 4).toString('ascii');
+      console.log('   - PDF Header:', pdfHeader);
+      if (pdfHeader !== '%PDF') {
+        console.log('   ⚠️  WARNING: File does not appear to be a valid PDF! (Header should be "%PDF")');
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid PDF file: File does not have a valid PDF header. Please upload a valid PDF file.',
+          detectedHeader: pdfHeader
+        });
+      }
+      console.log('   ✅ Valid PDF header detected');
     }
-    console.log('   ✅ Valid PDF header detected');
     
-    const pdfFilename = req.file.filename;
+    const fileName = req.file.originalname;
+    const fileBuffer = req.file.buffer; // ✅ Memory storage - get buffer directly
     
-    // OPTIMIZED: Store file path temporarily, upload to Cloudinary async
+    // ✅ CLOUDINARY: Upload file to Cloudinary directly from memory buffer
+    let cloudinaryUrl = null;
+    let cloudinaryPublicId = null;
+    
+    if (isCloudinaryConfigured()) {
+      try {
+        console.log(`📤 Uploading ${fileType} file directly to Cloudinary from memory...`);
+        
+        const cloudinaryResult = await uploadFileToCloudinary(
+          fileBuffer,
+          fileName,
+          'quotations'
+        );
+        
+        cloudinaryUrl = cloudinaryResult.url;
+        cloudinaryPublicId = cloudinaryResult.public_id;
+        
+        console.log(`✅ CLOUDINARY: ${fileType} FILE UPLOADED SUCCESSFULLY!`);
+        console.log('   - Cloudinary URL:', cloudinaryUrl);
+        console.log('   - Public ID:', cloudinaryPublicId);
+        console.log('   ✅ File uploaded directly to Cloudinary (no local storage)');
+      } catch (cloudinaryError) {
+        console.error('❌ CLOUDINARY UPLOAD ERROR:', cloudinaryError.message);
+        console.error('   Error details:', cloudinaryError);
+        throw new Error(`Cloudinary upload failed: ${cloudinaryError.message}`);
+      }
+    } else {
+      console.error('❌ CLOUDINARY: Not configured!');
+      console.error('   Please set CLOUD_NAME, CLOUD_KEY, and CLOUD_SECRET in .env file');
+      throw new Error('Cloudinary is not configured. Please configure Cloudinary in .env file.');
+    }
+    
+    // ✅ Save quotation with Cloudinary URL only (no local storage)
     const quotationData = {
       inquiryId: inquiryId.toString(),
       customerInfo: parsedCustomerInfo,
       totalAmount: parseFloat(totalAmount),
-      quotationPdf: pdfFilename, // Temporary - will be updated with Cloudinary URL
-      quotationPdfFilename: req.file.originalname,
-      quotationPdfCloudinaryUrl: null, // Will be set async
-      quotationPdfCloudinaryPublicId: null, // Will be set async
+      quotationPdf: cloudinaryUrl, // ✅ Cloudinary URL only
+      quotationPdfFilename: fileName, // Original filename
+      quotationPdfCloudinaryUrl: cloudinaryUrl, // Cloudinary URL
+      quotationPdfCloudinaryPublicId: cloudinaryPublicId, // Cloudinary public ID
       items: [],
       status: 'draft',
       validUntil: validUntil ? new Date(validUntil) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
@@ -522,59 +550,29 @@ router.post('/upload', [
       createdBy: req.userId
     };
 
-    // Save quotation quickly (without waiting for Cloudinary)
+    console.log('💾 Saving quotation to MongoDB...');
     const savedQuotation = await Quotation.create(quotationData);
     
-    // Update inquiry status quickly
+    console.log('✅ Quotation saved successfully!');
+    console.log('   - Quotation ID:', savedQuotation._id);
+    console.log('   - Quotation Number:', savedQuotation.quotationNumber);
+    console.log('   - PDF Storage:', cloudinaryUrl ? '☁️  Cloudinary' : '💾 Local');
+    if (cloudinaryUrl) {
+      console.log('   - Cloudinary URL:', cloudinaryUrl);
+    }
+    
+    // Update inquiry status
     await Inquiry.findByIdAndUpdate(inquiryId, { 
       status: 'quoted',
       quotation: savedQuotation._id 
     });
 
-    // Send response immediately
-    res.status(201).json({
+    res.json({
       success: true,
       message: 'Quotation uploaded successfully',
-      quotation: {
-        _id: savedQuotation._id,
-        quotationNumber: savedQuotation.quotationNumber,
-        inquiryId: savedQuotation.inquiryId,
-        totalAmount: savedQuotation.totalAmount,
-        status: savedQuotation.status
-      }
-    });
-
-    // OPTIMIZED: Upload PDF to Cloudinary asynchronously (after response)
-    setImmediate(async () => {
-      try {
-        const fileBuffer = fs.readFileSync(req.file.path);
-        const cloudinaryResult = await uploadPdfToCloudinary(
-          fileBuffer,
-          req.file.originalname,
-          'quotations'
-        );
-        
-        // Update quotation with Cloudinary URL
-        await Quotation.updateOne(
-          { _id: savedQuotation._id },
-          {
-            $set: {
-              quotationPdf: cloudinaryResult.url,
-              quotationPdfCloudinaryUrl: cloudinaryResult.url,
-              quotationPdfCloudinaryPublicId: cloudinaryResult.public_id
-            }
-          }
-        );
-        
-        // Delete file from disk
-        try {
-          fs.unlinkSync(req.file.path);
-        } catch (deleteError) {
-          console.error('Error deleting local file:', deleteError.message);
-        }
-      } catch (cloudinaryError) {
-        console.error('Error uploading PDF to Cloudinary:', cloudinaryError.message);
-      }
+      quotation: savedQuotation,
+      pdfStorage: cloudinaryUrl ? 'cloudinary' : 'local',
+      cloudinaryUrl: cloudinaryUrl
     });
 
     // OPTIMIZED: Create notifications asynchronously
@@ -1874,7 +1872,7 @@ router.put('/:id/upload-pdf', [
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'PDF file is required'
+        message: 'File is required (PDF, DWG, DXF, ZIP, XLSX, XLS)'
       });
     }
 
@@ -1887,128 +1885,95 @@ router.put('/:id/upload-pdf', [
       });
     }
 
-    // ✅ BEST PRACTICE: Keep file on disk, store only filename in database
-    const pdfFilename = req.file.filename;
+    // ✅ CLOUDINARY: Validate file from memory buffer (no disk access)
+    const fileExtension = path.extname(req.file.originalname).toLowerCase();
+    const fileType = fileExtension.slice(1).toUpperCase();
+    const fileSize = req.file.buffer.length;
     
-    // Validate PDF file
-    const fileStats = fs.statSync(req.file.path);
-    
-    // Validate file size (5MB limit)
-    if (fileStats.size > 5 * 1024 * 1024) {
-      // Delete invalid file
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (e) {}
+    // Validate file size (50MB limit)
+    if (fileSize > 50 * 1024 * 1024) {
       return res.status(400).json({
         success: false,
-        message: `PDF file size exceeds 5MB limit. Your file is ${(fileStats.size / 1024 / 1024).toFixed(2)}MB. Please upload a smaller file.`
+        message: `File size exceeds 50MB limit. Your file is ${(fileSize / 1024 / 1024).toFixed(2)}MB. Please upload a smaller file.`
       });
     }
     
-    if (fileStats.size < 100) {
-      // Delete invalid file
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (e) {}
+    // Validate minimum file size
+    if (fileSize < 100) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid PDF file: File size is too small.'
+        message: 'Invalid file: File size is too small. Please upload a valid file.'
       });
     }
     
-    // Validate PDF header
-    const pdfHeaderBuffer = Buffer.alloc(4);
-    const fd = fs.openSync(req.file.path, 'r');
-    fs.readSync(fd, pdfHeaderBuffer, 0, 4, 0);
-    fs.closeSync(fd);
-    const pdfHeader = pdfHeaderBuffer.toString('ascii');
-    
-    if (pdfHeader !== '%PDF') {
-      // Delete invalid file
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (e) {}
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid PDF file: File does not have a valid PDF header.'
-      });
+    // Validate PDF header only for PDF files
+    if (fileExtension === '.pdf') {
+      const pdfHeader = req.file.buffer.slice(0, 4).toString('ascii');
+      if (pdfHeader !== '%PDF') {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid PDF file: File does not have a valid PDF header.'
+        });
+      }
     }
 
-    // Upload PDF to Cloudinary
-    console.log('📤 Uploading PDF to Cloudinary...');
+    // ✅ CLOUDINARY: Upload file directly from memory buffer to Cloudinary
+    console.log('☁️  ===== CLOUDINARY: UPLOADING FILE =====');
+    console.log('   - Original Filename:', req.file.originalname);
+    console.log('   - File Size:', fileSize, 'bytes');
+    console.log('   - File Size (MB):', (fileSize / (1024 * 1024)).toFixed(2), 'MB');
+    console.log('   - File Type:', fileType);
+    console.log('   - Storage: Memory Buffer (direct to Cloudinary)');
+    
     let cloudinaryUrl = null;
     let cloudinaryPublicId = null;
     
-    try {
-      // Read file buffer
-      const fileBuffer = fs.readFileSync(req.file.path);
-      
-      // Upload to Cloudinary
-      const cloudinaryResult = await uploadPdfToCloudinary(
-        fileBuffer,
-        req.file.originalname,
-        'quotations'
-      );
-      
-      cloudinaryUrl = cloudinaryResult.url;
-      cloudinaryPublicId = cloudinaryResult.public_id;
-      
-      console.log('✅ PDF uploaded to Cloudinary successfully!');
-      console.log('   - Cloudinary URL:', cloudinaryUrl);
-      
-      // Delete old PDF from Cloudinary if exists
-      if (quotation.quotationPdfCloudinaryPublicId) {
-        try {
-          const { deletePdfFromCloudinary } = require('../services/cloudinaryService');
-          await deletePdfFromCloudinary(quotation.quotationPdfCloudinaryPublicId);
-        } catch (deleteError) {
-          console.warn('Could not delete old PDF from Cloudinary:', deleteError.message);
-        }
-      }
-      
-      // Delete old PDF file from filesystem if exists (VPS-compatible)
-      if (quotation.quotationPdf && !quotation.quotationPdf.startsWith('http')) {
-        const oldPdfPath = path.join(getQuotationsPath(), quotation.quotationPdf);
-        if (fs.existsSync(oldPdfPath) && oldPdfPath !== req.file.path) {
-          try {
-            fs.unlinkSync(oldPdfPath);
-            console.log('Old PDF file deleted from disk:', oldPdfPath);
-          } catch (unlinkError) {
-            console.warn('Could not delete old PDF file:', unlinkError);
-          }
-        }
-      }
-      
-      // Delete new file from disk after successful upload
+    if (isCloudinaryConfigured()) {
       try {
-        fs.unlinkSync(req.file.path);
-        console.log('   🗑️  Local file deleted after Cloudinary upload');
-      } catch (deleteError) {
-        console.error('   ⚠️  Error deleting local file:', deleteError.message);
-      }
-      
-    } catch (cloudinaryError) {
-      console.error('❌ Error uploading PDF to Cloudinary:', cloudinaryError.message);
-      // Fallback: keep file on disk if Cloudinary fails
-      console.log('⚠️  Falling back to disk storage');
-      cloudinaryUrl = null;
-      
-      // Delete old PDF file from filesystem if exists
-      if (quotation.quotationPdf && !quotation.quotationPdf.startsWith('http')) {
-        const oldPdfPath = path.join(getQuotationsPath(), quotation.quotationPdf);
-        if (fs.existsSync(oldPdfPath) && oldPdfPath !== req.file.path) {
+        // ✅ Get file buffer directly from memory (no disk read needed)
+        const fileBuffer = req.file.buffer;
+        
+        // Delete old file from Cloudinary if exists
+        if (quotation.quotationPdfCloudinaryPublicId) {
           try {
-            fs.unlinkSync(oldPdfPath);
-            console.log('Old PDF file deleted:', oldPdfPath);
-          } catch (unlinkError) {
-            console.warn('Could not delete old PDF file:', unlinkError);
+            const { deleteFileFromCloudinary } = require('../services/cloudinaryService');
+            await deleteFileFromCloudinary(quotation.quotationPdfCloudinaryPublicId);
+            console.log('🗑️  Old file deleted from Cloudinary');
+          } catch (deleteError) {
+            console.warn('⚠️  Could not delete old file from Cloudinary:', deleteError.message);
           }
         }
+        
+        // Upload to Cloudinary directly from memory buffer
+        console.log(`📤 Uploading ${fileType} file directly to Cloudinary from memory...`);
+        const cloudinaryResult = await uploadFileToCloudinary(
+          fileBuffer,
+          req.file.originalname,
+          'quotations'
+        );
+        
+        cloudinaryUrl = cloudinaryResult.url;
+        cloudinaryPublicId = cloudinaryResult.public_id;
+        
+        console.log(`✅ CLOUDINARY: ${fileType} FILE UPLOADED SUCCESSFULLY!`);
+        console.log('   - Cloudinary URL:', cloudinaryUrl);
+        console.log('   - Public ID:', cloudinaryPublicId);
+        console.log('   - Secure URL:', cloudinaryResult.secure_url);
+        console.log('   ✅ File uploaded directly to Cloudinary (no local storage)');
+        
+      } catch (cloudinaryError) {
+        console.error('❌ CLOUDINARY UPLOAD ERROR:', cloudinaryError.message);
+        console.error('   Error details:', cloudinaryError);
+        throw new Error(`Cloudinary upload failed: ${cloudinaryError.message}`);
       }
+    } else {
+      console.error('❌ CLOUDINARY: Not configured!');
+      console.error('   Please set CLOUD_NAME, CLOUD_KEY, and CLOUD_SECRET in .env file');
+      throw new Error('Cloudinary is not configured. Please configure Cloudinary in .env file.');
     }
 
-    // ✅ Update quotation with Cloudinary URL (or filename as fallback)
-    quotation.quotationPdf = cloudinaryUrl || pdfFilename; // Store Cloudinary URL or filename
+    // ✅ Update quotation with Cloudinary URL
+    quotation.quotationPdf = cloudinaryUrl; // Store Cloudinary URL
     quotation.quotationPdfFilename = req.file.originalname; // Store original filename
     quotation.quotationPdfCloudinaryUrl = cloudinaryUrl; // Store Cloudinary URL separately
     quotation.quotationPdfCloudinaryPublicId = cloudinaryPublicId; // For future deletion
@@ -2016,13 +1981,10 @@ router.put('/:id/upload-pdf', [
     quotation.updatedAt = new Date();
     await quotation.save();
 
-    console.log('✅ Quotation PDF updated successfully!');
-    console.log('   - Storage:', cloudinaryUrl ? 'Cloudinary ✅' : 'Disk (fallback)');
-    if (cloudinaryUrl) {
-      console.log('   - Cloudinary URL:', cloudinaryUrl);
-    } else {
-      console.log('   - File stored on disk at:', req.file.path);
-    }
+    console.log('✅ Quotation file updated successfully!');
+    console.log('   - Storage: ☁️  Cloudinary ✅');
+    console.log('   - Cloudinary URL:', cloudinaryUrl);
+    console.log('   - Public ID:', cloudinaryPublicId);
 
     res.json({
       success: true,
