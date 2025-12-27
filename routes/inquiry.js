@@ -711,369 +711,94 @@ router.get('/', authenticateToken, async (req, res) => {
 
 // Get all inquiries (Back Office) - ULTRA OPTIMIZED for <1s response
 router.get('/admin/all', authenticateToken, requireBackOffice, async (req, res) => {
+  const startTime = Date.now();
   try {
-    console.log('=== GET /admin/all - START ===');
-    console.log('User ID:', req.userId);
-    console.log('User Role:', req.userRole);
+    // Pagination parameters
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, Math.max(10, parseInt(req.query.limit) || 20)); // Default 20, max 50
+    const skip = (page - 1) * limit;
     
-    // Safety check - ensure user role is set
-    if (!req.userRole) {
-      console.error('User role not set in request');
-      return res.status(500).json({
-        success: false,
-        message: 'Authentication error',
-        inquiries: []
-      });
-    }
+    // Status filter (optional)
+    const statusFilter = req.query.status && req.query.status !== 'all' 
+      ? { status: req.query.status } 
+      : {};
     
-    const { limit = 50 } = req.query; // Reduced to 50 for <1s response
+    // ✅ ULTRA FAST: Simple find() with lean() - much faster than aggregation
+    // Use index on createdAt for fast sorting
+    const inquiries = await Inquiry.find(statusFilter)
+      .select('inquiryNumber status customer expectedDeliveryDate createdAt quotation')
+      .sort({ createdAt: -1 }) // Uses index
+      .limit(limit)
+      .skip(skip)
+      .lean(); // Returns plain objects - much faster
     
-    console.log('Fetching inquiries...');
+    // ✅ FAST: Batch fetch customers in one query
+    const customerIds = inquiries
+      .map(i => i.customer)
+      .filter(id => id && mongoose.Types.ObjectId.isValid(id))
+      .map(id => new mongoose.Types.ObjectId(id));
     
-    // Check database connection
-    if (mongoose.connection.readyState !== 1) {
-      console.error('Database not connected. Ready state:', mongoose.connection.readyState);
-      return res.status(500).json({
-        success: false,
-        message: 'Database connection error',
-        inquiries: []
-      });
-    }
-    
-    // ULTRA OPTIMIZED: Minimal fields only, no large data, strict limit
-    // Use aggregation pipeline to support allowDiskUse for large collections
-    let inquiries = [];
-    try {
-      const limitValue = Math.min(parseInt(limit) || 50, 50); // Max 50 records for speed
-      inquiries = await Inquiry.aggregate([
-        {
-          $project: {
-            inquiryNumber: 1,
-            status: 1,
-            customer: 1,
-            expectedDeliveryDate: 1,
-            createdAt: 1,
-            quotation: 1
-          }
-        },
-        {
-          $sort: { createdAt: -1 }
-        },
-        {
-          $limit: limitValue
-        }
-      ]).allowDiskUse(true); // Allow MongoDB to use disk for sorting when memory limit is exceeded
-    } catch (queryError) {
-      console.error('Error fetching inquiries from database:', queryError);
-      console.error('Query error name:', queryError.name);
-      console.error('Query error message:', queryError.message);
-      console.error('Query error stack:', queryError.stack);
-      return res.status(500).json({
-        success: false,
-        message: 'Error fetching inquiries',
-        error: process.env.NODE_ENV === 'development' ? queryError.message : undefined,
-        inquiries: []
-      });
-    }
-    
-    console.log('Inquiries fetched:', inquiries ? inquiries.length : 0);
-    
-    // Ensure inquiries is an array
-    if (!Array.isArray(inquiries)) {
-      console.error('Inquiries is not an array:', typeof inquiries);
-      return res.json({
-        success: true,
-        inquiries: []
-      });
-    }
-    
-    // Batch fetch customer data (only essential fields)
-    let customerMap = {};
-    try {
-      // Extract unique customer IDs - handle all possible formats from lean()
-      const customerIds = [];
-      const customerIdSet = new Set();
+    const customerMap = {};
+    if (customerIds.length > 0) {
+      const customers = await User.find({ _id: { $in: customerIds } })
+        .select('firstName lastName companyName')
+        .lean();
       
-      inquiries.forEach(i => {
-        if (i.customer) {
-          try {
-            let customerId = null;
-            let customerIdStr = null;
-            
-            // Handle different ObjectId formats from lean()
-            // When using .lean(), MongoDB returns plain objects, not Mongoose documents
-            if (i.customer instanceof mongoose.Types.ObjectId) {
-              customerId = i.customer;
-              customerIdStr = customerId.toString();
-            } else if (typeof i.customer === 'string') {
-              // String format - validate and use directly
-              if (mongoose.Types.ObjectId.isValid(i.customer)) {
-                customerId = new mongoose.Types.ObjectId(i.customer);
-                customerIdStr = i.customer;
-              }
-            } else if (i.customer && typeof i.customer === 'object') {
-              // Object format - could be { _id: ObjectId } or plain object with toString
-              if (i.customer._id) {
-                // Handle nested _id
-                const nestedId = i.customer._id;
-                if (nestedId instanceof mongoose.Types.ObjectId) {
-                  customerId = nestedId;
-                  customerIdStr = nestedId.toString();
-                } else if (typeof nestedId === 'string' && mongoose.Types.ObjectId.isValid(nestedId)) {
-                  customerId = new mongoose.Types.ObjectId(nestedId);
-                  customerIdStr = nestedId;
-                }
-              } else if (i.customer.toString && typeof i.customer.toString === 'function') {
-                // Object with toString method
-                try {
-                  customerIdStr = i.customer.toString();
-                  if (mongoose.Types.ObjectId.isValid(customerIdStr)) {
-                    customerId = new mongoose.Types.ObjectId(customerIdStr);
-                  }
-                } catch (toStringError) {
-                  // Ignore toString errors
-                }
-              }
-            }
-            
-            if (customerId && customerIdStr && !customerIdSet.has(customerIdStr)) {
-              customerIdSet.add(customerIdStr);
-              customerIds.push(customerId);
-            }
-          } catch (e) {
-            console.warn('Error extracting customer ID from inquiry:', i._id, e.message);
-          }
+      customers.forEach(c => {
+        if (c && c._id) {
+          customerMap[c._id.toString()] = {
+            firstName: c.firstName || null,
+            lastName: c.lastName || null,
+            companyName: c.companyName || null
+          };
         }
       });
-      
-      if (customerIds.length > 0) {
-        try {
-          const customers = await User.find({ _id: { $in: customerIds } })
-            .select('firstName lastName companyName')
-            .lean();
-          
-          // Create customer lookup map using string IDs as keys
-          customers.forEach(c => {
-            if (c && c._id) {
-              let idStr = null;
-              try {
-                if (c._id instanceof mongoose.Types.ObjectId) {
-                  idStr = c._id.toString();
-                } else if (typeof c._id === 'string') {
-                  idStr = c._id;
-                } else if (c._id.toString && typeof c._id.toString === 'function') {
-                  idStr = c._id.toString();
-                } else {
-                  idStr = String(c._id);
-                }
-                
-                if (idStr) {
-                  customerMap[idStr] = {
-                    firstName: c.firstName || null,
-                    lastName: c.lastName || null,
-                    companyName: c.companyName || null
-                  };
-                }
-              } catch (idError) {
-                console.warn('Error processing customer ID:', idError.message);
-              }
-            }
-          });
-        } catch (userQueryError) {
-          console.error('Error querying users:', userQueryError);
-          console.error('User query error stack:', userQueryError.stack);
-          // Continue with empty customerMap
-        }
-      }
-    } catch (customerError) {
-      console.error('Error fetching customers:', customerError);
-      console.error('Customer error stack:', customerError.stack);
-      // Continue with empty customerMap - inquiries will have null customers
-    }
-
-    // Map inquiries with customer data (minimal)
-    const inquiriesWithCustomer = [];
-    try {
-      inquiries.forEach(inquiry => {
-        try {
-        // Safely extract customer ID
-        let customerId = null;
-        if (inquiry.customer) {
-          try {
-            if (inquiry.customer instanceof mongoose.Types.ObjectId) {
-              customerId = inquiry.customer.toString();
-            } else if (typeof inquiry.customer === 'string') {
-              customerId = mongoose.Types.ObjectId.isValid(inquiry.customer) ? inquiry.customer : null;
-            } else if (inquiry.customer && typeof inquiry.customer === 'object') {
-              // Handle object format
-              if (inquiry.customer._id) {
-                const nestedId = inquiry.customer._id;
-                if (nestedId instanceof mongoose.Types.ObjectId) {
-                  customerId = nestedId.toString();
-                } else if (typeof nestedId === 'string' && mongoose.Types.ObjectId.isValid(nestedId)) {
-                  customerId = nestedId;
-                }
-              } else if (inquiry.customer.toString && typeof inquiry.customer.toString === 'function') {
-                try {
-                  const idStr = inquiry.customer.toString();
-                  customerId = mongoose.Types.ObjectId.isValid(idStr) ? idStr : null;
-                } catch (toStringError) {
-                  // Ignore toString errors
-                }
-              }
-            }
-          } catch (e) {
-            console.warn('Error extracting customer ID:', e.message);
-          }
-        }
-        
-        // Handle quotation field - ensure it's serializable
-        let quotationId = null;
-        if (inquiry.quotation) {
-          try {
-            if (inquiry.quotation instanceof mongoose.Types.ObjectId) {
-              quotationId = inquiry.quotation.toString();
-            } else if (typeof inquiry.quotation === 'string' && mongoose.Types.ObjectId.isValid(inquiry.quotation)) {
-              quotationId = inquiry.quotation;
-            } else if (typeof inquiry.quotation === 'object' && inquiry.quotation.toString) {
-              quotationId = inquiry.quotation.toString();
-            } else {
-              quotationId = String(inquiry.quotation);
-            }
-          } catch (e) {
-            console.warn('Error extracting quotation ID:', e.message);
-          }
-        }
-        
-        // Ensure dates are serializable
-        let expectedDeliveryDate = null;
-        if (inquiry.expectedDeliveryDate) {
-          try {
-            if (inquiry.expectedDeliveryDate instanceof Date) {
-              expectedDeliveryDate = inquiry.expectedDeliveryDate.toISOString();
-            } else if (inquiry.expectedDeliveryDate.toISOString) {
-              expectedDeliveryDate = inquiry.expectedDeliveryDate.toISOString();
-            } else {
-              expectedDeliveryDate = String(inquiry.expectedDeliveryDate);
-            }
-          } catch (e) {
-            // Ignore date conversion errors
-          }
-        }
-        
-        let createdAt = null;
-        if (inquiry.createdAt) {
-          try {
-            if (inquiry.createdAt instanceof Date) {
-              createdAt = inquiry.createdAt.toISOString();
-            } else if (inquiry.createdAt.toISOString) {
-              createdAt = inquiry.createdAt.toISOString();
-            } else {
-              createdAt = String(inquiry.createdAt);
-            }
-          } catch (e) {
-            // Ignore date conversion errors
-          }
-        }
-        
-        // Safely extract inquiry ID
-        let inquiryId = null;
-        if (inquiry._id) {
-          try {
-            if (inquiry._id instanceof mongoose.Types.ObjectId) {
-              inquiryId = inquiry._id.toString();
-            } else if (typeof inquiry._id === 'object' && inquiry._id.toString) {
-              inquiryId = inquiry._id.toString();
-            } else {
-              inquiryId = String(inquiry._id);
-            }
-          } catch (e) {
-            console.warn('Error extracting inquiry ID:', e.message);
-          }
-        }
-        
-          inquiriesWithCustomer.push({
-            _id: inquiryId,
-            inquiryNumber: inquiry.inquiryNumber || null,
-            status: inquiry.status || 'pending',
-            customer: customerId ? (customerMap[customerId] || null) : null,
-            expectedDeliveryDate: expectedDeliveryDate,
-            createdAt: createdAt,
-            quotation: quotationId
-          });
-        } catch (mapError) {
-          console.error('Error mapping inquiry:', inquiry._id, mapError);
-          console.error('Map error stack:', mapError.stack);
-          // Push minimal safe object
-          try {
-            inquiriesWithCustomer.push({
-              _id: inquiry._id ? String(inquiry._id) : null,
-              inquiryNumber: inquiry.inquiryNumber || null,
-              status: inquiry.status || 'pending',
-              customer: null,
-              expectedDeliveryDate: null,
-              createdAt: null,
-              quotation: null
-            });
-          } catch (pushError) {
-            console.error('Error pushing safe inquiry object:', pushError);
-          }
-        }
-      });
-    } catch (mappingError) {
-      console.error('Error in inquiry mapping loop:', mappingError);
-      console.error('Mapping error stack:', mappingError.stack);
-      // Continue with empty array or partial results
-    }
-
-    // Ensure we have a valid array and all data is serializable
-    let safeInquiries = [];
-    try {
-      safeInquiries = Array.isArray(inquiriesWithCustomer) 
-        ? inquiriesWithCustomer.filter(inq => inq !== null && inq !== undefined)
-        : [];
-    } catch (filterError) {
-      console.error('Error filtering inquiries:', filterError);
-      safeInquiries = [];
     }
     
-    console.log('Safe inquiries count:', safeInquiries.length);
+    // ✅ FAST: Simple transformation
+    const inquiriesWithCustomer = inquiries.map(inquiry => ({
+      _id: inquiry._id.toString(),
+      inquiryNumber: inquiry.inquiryNumber || null,
+      status: inquiry.status || 'pending',
+      customer: inquiry.customer 
+        ? (customerMap[inquiry.customer.toString()] || null)
+        : null,
+      expectedDeliveryDate: inquiry.expectedDeliveryDate 
+        ? inquiry.expectedDeliveryDate.toISOString() 
+        : null,
+      createdAt: inquiry.createdAt 
+        ? inquiry.createdAt.toISOString() 
+        : null,
+      quotation: inquiry.quotation 
+        ? inquiry.quotation.toString() 
+        : null
+    }));
     
-    // Final safety check - ensure response is serializable
-    try {
-      const responseData = {
-        success: true,
-        inquiries: safeInquiries
-      };
-      
-      // Test JSON serialization before sending
-      JSON.stringify(responseData);
-      
-      console.log('Sending response...');
-      res.json(responseData);
-      console.log('=== GET /admin/all - SUCCESS ===');
-    } catch (jsonError) {
-      console.error('JSON serialization error:', jsonError);
-      console.error('Failed to serialize inquiries, sending empty array');
-      res.json({
-        success: true,
-        inquiries: []
-      });
-    }
+    // Get total count for pagination (only if needed)
+    const totalCount = req.query.includeTotal === 'true' 
+      ? await Inquiry.countDocuments(statusFilter)
+      : null;
+    
+    const responseTime = Date.now() - startTime;
+    console.log(`✅ GET /admin/all - ${responseTime}ms - ${inquiriesWithCustomer.length} inquiries`);
+    
+    res.json({
+      success: true,
+      inquiries: inquiriesWithCustomer,
+      pagination: totalCount !== null ? {
+        page,
+        limit,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limit)
+      } : undefined
+    });
 
   } catch (error) {
-    console.error('=== GET /admin/all - ERROR ===');
-    console.error('Error name:', error.name);
-    console.error('Error message:', error.message);
-    console.error('Error stack:', error.stack);
-    if (error.stack) {
-      console.error('Stack trace:', error.stack.split('\n').slice(0, 10).join('\n'));
-    }
+    const responseTime = Date.now() - startTime;
+    console.error(`❌ GET /admin/all - ERROR (${responseTime}ms):`, error.message);
     res.status(500).json({
       success: false,
       message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
-      errorType: process.env.NODE_ENV === 'development' ? error.name : undefined,
       inquiries: []
     });
   }

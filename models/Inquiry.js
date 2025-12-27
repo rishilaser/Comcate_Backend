@@ -97,6 +97,7 @@ const inquirySchema = new mongoose.Schema({
 inquirySchema.index({ customer: 1, createdAt: -1 }); // For customer inquiries list
 inquirySchema.index({ status: 1, createdAt: -1 }); // For filtering by status
 inquirySchema.index({ quotation: 1 }); // For quotation lookups
+inquirySchema.index({ createdAt: -1 }); // For admin/all endpoint - fast sorting
 
 // Generate inquiry number using nomenclature config
 inquirySchema.pre('save', async function() {
