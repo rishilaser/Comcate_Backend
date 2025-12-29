@@ -19,8 +19,11 @@ jobs:
 
       - name: Upload backend
         run: |
-          rsync -avz --delete  \
-          --exclude=".env" --exclude=".htaccess"
+          rsync -avz --delete \
+            --exclude=".env" \
+            --exclude=".env.*" \
+            --exclude=".htaccess" \
+            --exclude="node_modules" \
             -e "ssh -o StrictHostKeyChecking=no" \
             ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ secrets.BACKEND_PATH }}
 
@@ -28,7 +31,7 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
             cd ${{ secrets.BACKEND_PATH }} &&
-            npm install &&
+            npm install --production &&
             pm2 restart backend || pm2 start index.js --name backend &&
             pm2 save
           "
