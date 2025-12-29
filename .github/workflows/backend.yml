@@ -19,7 +19,8 @@ jobs:
 
       - name: Upload backend
         run: |
-          rsync -avz --delete \
+          rsync -avz --delete  \
+          --exclude=".env" --exclude=".htaccess"
             -e "ssh -o StrictHostKeyChecking=no" \
             ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ secrets.BACKEND_PATH }}
 
