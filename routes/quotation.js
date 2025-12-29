@@ -12,7 +12,6 @@ const Quotation = require('../models/Quotation');
 const Inquiry = require('../models/Inquiry');
 // ✅ CLOUDINARY: No local uploads directory needed - all files go to Cloudinary
 const { uploadFileToCloudinary, uploadPdfToCloudinary, isCloudinaryConfigured } = require('../services/cloudinaryService');
-const { getQuotationsPath } = require('../config/uploadConfig');
 const axios = require('axios');
 const mongoose = require('mongoose');
 
@@ -1239,38 +1238,13 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
     // Helper function to fetch PDF from Cloudinary and serve it
     const fetchAndServeCloudinaryPdf = async (cloudinaryUrl) => {
       try {
-        if (!cloudinaryUrl || typeof cloudinaryUrl !== 'string') {
-          console.error('❌ Invalid Cloudinary URL:', cloudinaryUrl);
-          return false;
-        }
-
         console.log('☁️  Fetching PDF from Cloudinary:', cloudinaryUrl);
         const response = await axios.get(cloudinaryUrl, {
           responseType: 'arraybuffer',
-          timeout: 30000, // 30 second timeout
-          validateStatus: (status) => status === 200 // Only accept 200 status
+          timeout: 30000 // 30 second timeout
         });
         
-        if (!response.data || response.data.length === 0) {
-          console.error('❌ Empty response from Cloudinary');
-          return false;
-        }
-
         const pdfBuffer = Buffer.from(response.data);
-        
-        // Validate PDF buffer
-        if (!pdfBuffer || pdfBuffer.length === 0) {
-          console.error('❌ Invalid PDF buffer from Cloudinary');
-          return false;
-        }
-
-        // Validate PDF header
-        const pdfHeader = pdfBuffer.toString('ascii', 0, 4);
-        if (pdfHeader !== '%PDF') {
-          console.error('❌ Invalid PDF header from Cloudinary:', pdfHeader);
-          return false;
-        }
-
         const pdfFileName = `quotation_${quotation.quotationNumber || quotation._id}.pdf`;
         
         console.log('✅ PDF fetched from Cloudinary, size:', pdfBuffer.length, 'bytes');
@@ -1281,20 +1255,12 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
           ? `attachment; filename="${pdfFileName}"` 
           : `inline; filename="${pdfFileName}"`);
         res.setHeader('Content-Length', pdfBuffer.length);
-        res.setHeader('Cache-Control', 'private, max-age=30');
-        // Allow iframe embedding for PDF viewing
-        res.setHeader('X-Frame-Options', 'SAMEORIGIN');
         
-        res.send(pdfBuffer);
-        return true; // Successfully sent
+        return res.send(pdfBuffer);
       } catch (error) {
         console.error('❌ Error fetching PDF from Cloudinary:', error.message);
-        if (error.response) {
-          console.error('   - Status:', error.response.status);
-          console.error('   - Status Text:', error.response.statusText);
-        }
         // Fall through to try other methods
-        return false;
+        return null;
       }
     };
 
@@ -1303,7 +1269,7 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY =====');
       console.log('   - Cloudinary URL:', quotation.quotationPdfCloudinaryUrl);
       const result = await fetchAndServeCloudinaryPdf(quotation.quotationPdfCloudinaryUrl);
-      if (result === true) return; // Successfully served
+      if (result !== null) return; // Successfully served
     }
     
     // Check if quotationPdf is a Cloudinary URL (starts with http)
@@ -1311,7 +1277,7 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       console.log('☁️  ===== BACKEND: SERVING PDF FROM CLOUDINARY (URL format) =====');
       console.log('   - Cloudinary URL:', quotation.quotationPdf);
       const result = await fetchAndServeCloudinaryPdf(quotation.quotationPdf);
-      if (result === true) return; // Successfully served
+      if (result !== null) return; // Successfully served
     }
 
     // Helper function to generate PDF
@@ -1476,8 +1442,6 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
         }
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
-        // Allow iframe embedding for PDF viewing
-        res.setHeader('X-Frame-Options', 'SAMEORIGIN');
         
         console.log('   ✅ Sending PDF file to client...');
         return res.sendFile(path.resolve(pdfPath));
@@ -1519,8 +1483,6 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Length', pdfBuffer.length);
       res.setHeader('Cache-Control', 'no-cache');
-      // Allow iframe embedding for PDF viewing
-      res.setHeader('X-Frame-Options', 'SAMEORIGIN');
 
       // Send the PDF buffer
       console.log('   ✅ Sending PDF buffer to client...');
@@ -1601,8 +1563,6 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Length', pdfBuffer.length);
     res.setHeader('Cache-Control', 'no-cache');
-    // Allow iframe embedding for PDF viewing
-    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
 
     console.log('✅ Sending generated PDF to client, size:', pdfBuffer.length, 'bytes');
     // Send the PDF buffer

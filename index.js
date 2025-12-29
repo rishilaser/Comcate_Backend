@@ -51,8 +51,7 @@ app.use(helmet({
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
-      // Allow Cloudinary iframes for PDF viewing and blob URLs for API-fetched PDFs
-      frameSrc: ["'self'", "https://res.cloudinary.com", "blob:"],
+      frameSrc: ["'none'"],
     },
   },
 }));
