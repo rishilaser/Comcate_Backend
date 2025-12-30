@@ -501,47 +501,15 @@ router.post('/upload', [
     const fileName = req.file.originalname;
     const fileBuffer = req.file.buffer; // ✅ Memory storage - get buffer directly
     
-    // ✅ CLOUDINARY: Upload file to Cloudinary directly from memory buffer
-    let cloudinaryUrl = null;
-    let cloudinaryPublicId = null;
-    
-    if (isCloudinaryConfigured()) {
-      try {
-        console.log(`📤 Uploading ${fileType} file directly to Cloudinary from memory...`);
-        
-        const cloudinaryResult = await uploadFileToCloudinary(
-          fileBuffer,
-          fileName,
-          'quotations'
-        );
-        
-        cloudinaryUrl = cloudinaryResult.url;
-        cloudinaryPublicId = cloudinaryResult.public_id;
-        
-        console.log(`✅ CLOUDINARY: ${fileType} FILE UPLOADED SUCCESSFULLY!`);
-        console.log('   - Cloudinary URL:', cloudinaryUrl);
-        console.log('   - Public ID:', cloudinaryPublicId);
-        console.log('   ✅ File uploaded directly to Cloudinary (no local storage)');
-      } catch (cloudinaryError) {
-        console.error('❌ CLOUDINARY UPLOAD ERROR:', cloudinaryError.message);
-        console.error('   Error details:', cloudinaryError);
-        throw new Error(`Cloudinary upload failed: ${cloudinaryError.message}`);
-      }
-    } else {
-      console.error('❌ CLOUDINARY: Not configured!');
-      console.error('   Please set CLOUD_NAME, CLOUD_KEY, and CLOUD_SECRET in .env file');
-      throw new Error('Cloudinary is not configured. Please configure Cloudinary in .env file.');
-    }
-    
-    // ✅ Save quotation with Cloudinary URL only (no local storage)
+    // ✅ Save quotation first (without Cloudinary URL) for fast response
     const quotationData = {
       inquiryId: inquiryId.toString(),
       customerInfo: parsedCustomerInfo,
       totalAmount: parseFloat(totalAmount),
-      quotationPdf: cloudinaryUrl, // ✅ Cloudinary URL only
+      quotationPdf: null, // Will be updated after Cloudinary upload
       quotationPdfFilename: fileName, // Original filename
-      quotationPdfCloudinaryUrl: cloudinaryUrl, // Cloudinary URL
-      quotationPdfCloudinaryPublicId: cloudinaryPublicId, // Cloudinary public ID
+      quotationPdfCloudinaryUrl: null, // Will be updated after Cloudinary upload
+      quotationPdfCloudinaryPublicId: null, // Will be updated after Cloudinary upload
       items: [],
       status: 'draft',
       validUntil: validUntil ? new Date(validUntil) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
@@ -556,10 +524,6 @@ router.post('/upload', [
     console.log('✅ Quotation saved successfully!');
     console.log('   - Quotation ID:', savedQuotation._id);
     console.log('   - Quotation Number:', savedQuotation.quotationNumber);
-    console.log('   - PDF Storage:', cloudinaryUrl ? '☁️  Cloudinary' : '💾 Local');
-    if (cloudinaryUrl) {
-      console.log('   - Cloudinary URL:', cloudinaryUrl);
-    }
     
     // Update inquiry status
     await Inquiry.findByIdAndUpdate(inquiryId, { 
@@ -567,12 +531,51 @@ router.post('/upload', [
       quotation: savedQuotation._id 
     });
 
+    // Return response immediately for fast API response
     res.json({
       success: true,
       message: 'Quotation uploaded successfully',
       quotation: savedQuotation,
-      pdfStorage: cloudinaryUrl ? 'cloudinary' : 'local',
-      cloudinaryUrl: cloudinaryUrl
+      pdfStorage: 'cloudinary',
+      cloudinaryUrl: null // Will be updated in background
+    });
+
+    // Upload to Cloudinary in background (non-blocking)
+    setImmediate(async () => {
+      try {
+        if (!isCloudinaryConfigured()) {
+          console.error('❌ CLOUDINARY: Not configured!');
+          throw new Error('Cloudinary is not configured.');
+        }
+
+        console.log(`📤 Uploading ${fileType} file directly to Cloudinary from memory...`);
+        
+        const cloudinaryResult = await uploadFileToCloudinary(
+          fileBuffer,
+          fileName,
+          'quotations'
+        );
+        
+        const cloudinaryUrl = cloudinaryResult.url;
+        const cloudinaryPublicId = cloudinaryResult.public_id;
+        
+        console.log(`✅ CLOUDINARY: ${fileType} FILE UPLOADED SUCCESSFULLY!`);
+        console.log('   - Cloudinary URL:', cloudinaryUrl);
+        console.log('   - Public ID:', cloudinaryPublicId);
+        
+        // Update quotation with Cloudinary URL
+        await Quotation.findByIdAndUpdate(savedQuotation._id, {
+          quotationPdf: cloudinaryUrl,
+          quotationPdfCloudinaryUrl: cloudinaryUrl,
+          quotationPdfCloudinaryPublicId: cloudinaryPublicId
+        });
+        
+        console.log('✅ Quotation updated with Cloudinary URL');
+      } catch (cloudinaryError) {
+        console.error('❌ CLOUDINARY UPLOAD ERROR:', cloudinaryError.message);
+        console.error('   Error details:', cloudinaryError);
+        // Don't fail the request - quotation is already saved
+      }
     });
 
     // OPTIMIZED: Create notifications asynchronously
@@ -946,73 +949,60 @@ router.post('/:id/send', authenticateToken, async (req, res) => {
     await quotation.save();
     console.log('Quotation status updated to sent');
 
-    // Send email to customer
-    try {
-      console.log('Attempting to send email...');
-      if (quotation.customerInfo.email && quotation.customerInfo.email !== 'customer@example.com') {
-        // Create a simple email notification
-        const nodemailer = require('nodemailer');
-        
-        // Create transporter (basic configuration)
-        const transporter = nodemailer.createTransporter({
-          host: process.env.SMTP_HOST || 'smtp.gmail.com',
-          port: process.env.SMTP_PORT || 587,
-          secure: false,
-          auth: {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASS
-          }
-        });
-
-        const mailOptions = {
-          from: process.env.SMTP_FROM || 'noreply@komacut.com',
-          to: quotation.customerInfo.email,
-          subject: `Quotation ${quotation.quotationNumber} - Komacut`,
-          html: `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-              <h2>Your Quotation is Ready!</h2>
-              <p>Dear ${quotation.customerInfo.name},</p>
-              <p>Your quotation ${quotation.quotationNumber} has been prepared.</p>
-              <p><strong>Total Amount:</strong> $${quotation.totalAmount}</p>
-              <p>Please log in to your account to view the full quotation details.</p>
-              <p>Thank you for choosing Komacut!</p>
-            </div>
-          `
-        };
-
-        await transporter.sendMail(mailOptions);
-        console.log('Quotation email sent successfully');
-      } else {
-        console.log('No valid customer email for notification');
-      }
-    } catch (emailError) {
-      console.error('Email sending failed:', emailError);
-      // Don't fail the request if email fails
-    }
-
-    // Send SMS to customer
-    try {
-      console.log('Attempting to send SMS...');
-      console.log('Customer phone:', quotation.customerInfo.phone);
-      if (quotation.customerInfo.phone) {
-        const smsResult = await sendSMS(
-          quotation.customerInfo.phone,
-          `Your quotation ${quotation.quotationNumber} has been sent. Total amount: $${quotation.totalAmount}. Please check your email for details.`
-        );
-        console.log('SMS result:', smsResult);
-      } else {
-        console.log('No customer phone number available for SMS');
-      }
-    } catch (smsError) {
-      console.error('SMS sending failed:', smsError);
-      // Don't fail the request if SMS fails
-    }
-
-    console.log('=== SEND QUOTATION COMPLETE ===');
+    // Return response immediately for fast API response
     res.json({
       success: true,
       message: 'Quotation sent successfully',
       quotation: quotation
+    });
+
+    // Send email and SMS asynchronously in the background (non-blocking)
+    setImmediate(async () => {
+      try {
+        // Get inquiry number for email
+        let inquiryNumber = null;
+        try {
+          const inquiry = await Inquiry.findById(quotation.inquiryId).select('inquiryNumber').lean();
+          if (inquiry) {
+            inquiryNumber = inquiry.inquiryNumber;
+          }
+        } catch (inquiryError) {
+          console.warn('Could not fetch inquiry number:', inquiryError.message);
+        }
+
+        // Send email to customer using proper email service
+        try {
+          console.log('Attempting to send quotation email to customer...');
+          const { sendQuotationSentEmail } = require('../services/emailService');
+          await sendQuotationSentEmail(quotation, inquiryNumber);
+          console.log('✅ Quotation email sent successfully to customer');
+        } catch (emailError) {
+          console.error('❌ Email sending failed:', emailError);
+          // Don't fail the request if email fails, but log the error
+        }
+
+        // Send SMS to customer
+        try {
+          console.log('Attempting to send SMS...');
+          console.log('Customer phone:', quotation.customerInfo.phone);
+          if (quotation.customerInfo.phone) {
+            const smsResult = await sendSMS(
+              quotation.customerInfo.phone,
+              `Your quotation ${quotation.quotationNumber} has been sent. Total amount: $${quotation.totalAmount}. Please check your email for details.`
+            );
+            console.log('SMS result:', smsResult);
+          } else {
+            console.log('No customer phone number available for SMS');
+          }
+        } catch (smsError) {
+          console.error('SMS sending failed:', smsError);
+          // Don't fail the request if SMS fails
+        }
+
+        console.log('=== SEND QUOTATION BACKGROUND TASKS COMPLETE ===');
+      } catch (backgroundError) {
+        console.error('Background task error:', backgroundError);
+      }
     });
 
   } catch (error) {

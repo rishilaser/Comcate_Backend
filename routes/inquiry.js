@@ -571,6 +571,14 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
         // Populate customer data for notification (async)
         await inquiry.populate('customer', 'firstName lastName email companyName phoneNumber');
         
+        // Send confirmation email to customer (async)
+        try {
+          const { sendInquiryConfirmationEmail } = require('../services/emailService');
+          await sendInquiryConfirmationEmail(inquiry);
+        } catch (customerEmailError) {
+          console.error('❌ Customer inquiry confirmation email failed:', customerEmailError.message);
+        }
+        
         // Send email notification to back office (async)
         try {
           await sendInquiryNotification(inquiry);

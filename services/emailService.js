@@ -123,6 +123,167 @@ const sendWelcomeEmail = async (email, firstName) => {
   }
 };
 
+// Send inquiry confirmation email to customer
+const sendInquiryConfirmationEmail = async (inquiry) => {
+  try {
+    console.log('=== SENDING INQUIRY CONFIRMATION EMAIL TO CUSTOMER ===');
+    console.log('Inquiry:', inquiry.inquiryNumber);
+    console.log('Customer:', inquiry.customer?.email);
+    
+    const transporter = createTransporter();
+    
+    // If no transporter (SMTP not configured), just log and return
+    if (!transporter) {
+      console.log('SMTP not configured. Inquiry confirmation email skipped for:', inquiry.customer?.email);
+      return;
+    }
+    
+    // Get customer information - handle both populated and unpopulated cases
+    let customerInfo = {};
+    if (inquiry.customer && typeof inquiry.customer === 'object') {
+      if (inquiry.customer.firstName) {
+        // Customer is populated
+        customerInfo = {
+          firstName: inquiry.customer.firstName,
+          lastName: inquiry.customer.lastName || '',
+          email: inquiry.customer.email || '',
+          companyName: inquiry.customer.companyName || ''
+        };
+      } else {
+        // Customer is an ObjectId, we need to fetch it
+        try {
+          const User = require('../models/User');
+          const customer = await User.findById(inquiry.customer);
+          if (customer) {
+            customerInfo = {
+              firstName: customer.firstName || 'Customer',
+              lastName: customer.lastName || '',
+              email: customer.email || '',
+              companyName: customer.companyName || ''
+            };
+          }
+        } catch (fetchError) {
+          console.error('Failed to fetch customer data:', fetchError);
+          return;
+        }
+      }
+    } else {
+      console.error('No customer data found for inquiry:', inquiry._id);
+      return;
+    }
+    
+    // Validate customer email
+    if (!customerInfo.email || customerInfo.email === 'customer@example.com') {
+      console.error('No valid customer email found for inquiry:', inquiry._id);
+      return;
+    }
+    
+    const customerName = `${customerInfo.firstName} ${customerInfo.lastName}`.trim() || 'Valued Customer';
+    
+    const mailOptions = {
+      from: process.env.SMTP_FROM || 'noreply@247cutbend.com',
+      to: customerInfo.email,
+      subject: `Inquiry ${inquiry.inquiryNumber} Submitted Successfully - 247 CutBend`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background-color: #FF9800; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+            <h1 style="margin: 0; font-size: 28px; font-weight: 700;">247 CUTBEND</h1>
+            <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.9;">SHEET METAL PARTS ON DEMAND</p>
+            <h2 style="margin: 20px 0 10px 0; font-size: 24px; font-weight: 600;">Inquiry Submitted Successfully!</h2>
+          </div>
+          
+          <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <h3 style="color: #333; margin-top: 0;">Dear ${customerName},</h3>
+            <p style="color: #555; line-height: 1.6;">Thank you for submitting your inquiry. We have received your request and our team will review it shortly.</p>
+            
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #FF9800;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">📋 Inquiry Details</h3>
+              <p style="margin: 8px 0; color: #555;"><strong>Inquiry Number:</strong> ${inquiry.inquiryNumber}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Status:</strong> Under Review</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Submitted Date:</strong> ${new Date(inquiry.createdAt).toLocaleDateString()}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Total Parts:</strong> ${inquiry.parts?.length || 0}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Files Attached:</strong> ${inquiry.files?.length || 0}</p>
+            </div>
+            
+            ${inquiry.parts && inquiry.parts.length > 0 ? `
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #4CAF50;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">🔧 Parts Summary</h3>
+              <div style="background-color: white; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <thead>
+                    <tr style="background-color: #f5f5f5;">
+                      <th style="padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 2px solid #ddd;">Part</th>
+                      <th style="padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 2px solid #ddd;">Material</th>
+                      <th style="padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 2px solid #ddd;">Thickness</th>
+                      <th style="padding: 12px; text-align: right; font-weight: 600; color: #333; border-bottom: 2px solid #ddd;">Qty</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${inquiry.parts.slice(0, 10).map(part => `
+                      <tr style="border-bottom: 1px solid #eee;">
+                        <td style="padding: 12px; color: #555;">${part.partRef || part.partName || 'N/A'}</td>
+                        <td style="padding: 12px; color: #555;">${part.material || 'N/A'}</td>
+                        <td style="padding: 12px; color: #555;">${part.thickness || 'N/A'}${part.thickness ? 'mm' : ''}</td>
+                        <td style="padding: 12px; text-align: right; color: #555;">${part.quantity || 0}</td>
+                      </tr>
+                    `).join('')}
+                    ${inquiry.parts.length > 10 ? `
+                      <tr>
+                        <td colspan="4" style="padding: 12px; text-align: center; color: #666; font-style: italic;">
+                          ... and ${inquiry.parts.length - 10} more parts
+                        </td>
+                      </tr>
+                    ` : ''}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            ` : ''}
+            
+            ${inquiry.specialInstructions ? `
+            <div style="background-color: #e3f2fd; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #2196F3;">
+              <h3 style="margin-top: 0; color: #333;">Special Instructions:</h3>
+              <p style="margin: 0; color: #555; line-height: 1.6;">${inquiry.specialInstructions}</p>
+            </div>
+            ` : ''}
+            
+            <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 25px 0;">
+              <h3 style="margin-top: 0; color: #333;">What's Next?</h3>
+              <ul style="margin: 10px 0; padding-left: 20px; color: #555;">
+                <li>Our team will review your inquiry and technical drawings</li>
+                <li>You will receive a quotation within 24-48 hours</li>
+                <li>You can track your inquiry status by logging into your account</li>
+                <li>If you have any questions, please don't hesitate to contact us</li>
+              </ul>
+            </div>
+            
+            <p style="margin-top: 30px; color: #555;">Thank you for choosing 247 CutBend for your sheet metal manufacturing needs. We look forward to serving you!</p>
+          </div>
+          
+          <div style="background-color: #333; color: white; padding: 20px; text-align: center; border-radius: 0 0 8px 8px; font-size: 12px;">
+            <p style="margin: 0 0 5px 0;">© 2024 247 CutBend. All rights reserved.</p>
+            <p style="margin: 0; opacity: 0.8;">Delivering Factory Direct Quality Sheet Metal Parts Since 2005</p>
+          </div>
+        </div>
+      `
+    };
+
+    console.log('Sending inquiry confirmation email with options:', {
+      from: mailOptions.from,
+      to: mailOptions.to,
+      subject: mailOptions.subject
+    });
+
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Inquiry confirmation email sent successfully to customer!');
+    console.log('Message ID:', result.messageId);
+    
+  } catch (error) {
+    console.error('Inquiry confirmation email failed:', error);
+    // Don't throw error, just log it to prevent inquiry creation from failing
+  }
+};
+
 // Send inquiry notification to back office
 const sendInquiryNotification = async (inquiry) => {
   try {
@@ -509,6 +670,158 @@ const sendInquiryNotification = async (inquiry) => {
   } catch (error) {
     console.error('Inquiry notification failed:', error);
     // Don't throw error, just log it to prevent inquiry creation from failing
+  }
+};
+
+// Send quotation email to customer (when admin sends quotation)
+const sendQuotationSentEmail = async (quotation, inquiryNumber = null) => {
+  try {
+    console.log('=== SENDING QUOTATION SENT EMAIL ===');
+    console.log('Quotation:', quotation.quotationNumber);
+    console.log('Customer Email:', quotation.customerInfo?.email);
+    
+    const transporter = createTransporter();
+    
+    // If no transporter (SMTP not configured), just log and return
+    if (!transporter) {
+      console.log('SMTP not configured. Quotation sent email skipped for:', quotation.customerInfo?.email);
+      return;
+    }
+    
+    // Validate customer email
+    if (!quotation.customerInfo || !quotation.customerInfo.email || quotation.customerInfo.email === 'customer@example.com') {
+      console.error('No valid customer email found for quotation:', quotation._id);
+      return;
+    }
+    
+    const customerName = quotation.customerInfo.name || 'Valued Customer';
+    const customerEmail = quotation.customerInfo.email;
+    
+    const mailOptions = {
+      from: process.env.SMTP_FROM || 'noreply@247cutbend.com',
+      to: customerEmail,
+      subject: `Quotation ${quotation.quotationNumber} - 247 CutBend`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background-color: #FF9800; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+            <h1 style="margin: 0; font-size: 28px; font-weight: 700;">247 CUTBEND</h1>
+            <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.9;">SHEET METAL PARTS ON DEMAND</p>
+            <h2 style="margin: 20px 0 10px 0; font-size: 24px; font-weight: 600;">Your Quotation is Ready!</h2>
+          </div>
+          
+          <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <h3 style="color: #333; margin-top: 0;">Dear ${customerName},</h3>
+            <p style="color: #555; line-height: 1.6;">Thank you for your inquiry. We have prepared a competitive quotation for your sheet metal parts.</p>
+            
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #FF9800;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">📋 Quotation Summary</h3>
+              <p style="margin: 8px 0; color: #555;"><strong>Quotation Number:</strong> ${quotation.quotationNumber}</p>
+              ${inquiryNumber ? `<p style="margin: 8px 0; color: #555;"><strong>Inquiry Number:</strong> ${inquiryNumber}</p>` : ''}
+              <p style="margin: 8px 0; color: #555;"><strong>Total Amount:</strong> ${quotation.currency || 'USD'} $${quotation.totalAmount}</p>
+              ${quotation.validUntil ? `<p style="margin: 8px 0; color: #555;"><strong>Valid Until:</strong> ${new Date(quotation.validUntil).toLocaleDateString()}</p>` : ''}
+            </div>
+            
+            ${quotation.items && quotation.items.length > 0 ? `
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #4CAF50;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">🔧 Parts & Pricing</h3>
+              <div style="background-color: white; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <thead>
+                    <tr style="background-color: #f5f5f5;">
+                      <th style="padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 2px solid #ddd;">Part</th>
+                      <th style="padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 2px solid #ddd;">Material</th>
+                      <th style="padding: 12px; text-align: left; font-weight: 600; color: #333; border-bottom: 2px solid #ddd;">Qty</th>
+                      <th style="padding: 12px; text-align: right; font-weight: 600; color: #333; border-bottom: 2px solid #ddd;">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${quotation.items.slice(0, 10).map(item => `
+                      <tr style="border-bottom: 1px solid #eee;">
+                        <td style="padding: 12px; color: #555;">${item.partRef || 'N/A'}</td>
+                        <td style="padding: 12px; color: #555;">${item.material || 'N/A'}</td>
+                        <td style="padding: 12px; color: #555;">${item.quantity || 0}</td>
+                        <td style="padding: 12px; text-align: right; color: #555;">$${item.totalPrice || 0}</td>
+                      </tr>
+                    `).join('')}
+                    ${quotation.items.length > 10 ? `
+                      <tr>
+                        <td colspan="4" style="padding: 12px; text-align: center; color: #666; font-style: italic;">
+                          ... and ${quotation.items.length - 10} more items
+                        </td>
+                      </tr>
+                    ` : ''}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            ` : ''}
+            
+            ${quotation.terms ? `
+            <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #4CAF50;">
+              <h3 style="margin-top: 0; color: #333;">Terms & Conditions:</h3>
+              <p style="margin: 0; color: #555; line-height: 1.6;">${quotation.terms}</p>
+            </div>
+            ` : ''}
+            
+            ${quotation.notes ? `
+            <div style="background-color: #e3f2fd; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #2196F3;">
+              <h3 style="margin-top: 0; color: #333;">Additional Notes:</h3>
+              <p style="margin: 0; color: #555; line-height: 1.6;">${quotation.notes}</p>
+            </div>
+            ` : ''}
+            
+            <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 25px 0;">
+              <h3 style="margin-top: 0; color: #333;">What's Next?</h3>
+              <ul style="margin: 10px 0; padding-left: 20px; color: #555;">
+                <li>Please log in to your account to view the full quotation details</li>
+                <li>Review the quotation and accept or request changes</li>
+                <li>If you have any questions, please don't hesitate to contact us</li>
+              </ul>
+            </div>
+            
+            <p style="margin-top: 30px; color: #555;">Thank you for choosing 247 CutBend for your sheet metal manufacturing needs.</p>
+          </div>
+          
+          <div style="background-color: #333; color: white; padding: 20px; text-align: center; border-radius: 0 0 8px 8px; font-size: 12px;">
+            <p style="margin: 0 0 5px 0;">© 2024 247 CutBend. All rights reserved.</p>
+            <p style="margin: 0; opacity: 0.8;">Delivering Factory Direct Quality Sheet Metal Parts Since 2005</p>
+          </div>
+        </div>
+      `
+    };
+
+    console.log('Sending quotation email with options:', {
+      from: mailOptions.from,
+      to: mailOptions.to,
+      subject: mailOptions.subject
+    });
+
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Quotation sent email sent successfully!');
+    console.log('Message ID:', result.messageId);
+    
+    // Send SMS notification to customer
+    try {
+      const { sendQuotationNotificationSMS } = require('./smsService');
+      const customerInfo = {
+        firstName: quotation.customerInfo.name?.split(' ')[0] || 'Customer',
+        lastName: quotation.customerInfo.name?.split(' ').slice(1).join(' ') || '',
+        phoneNumber: quotation.customerInfo.phone
+      };
+      const smsResult = await sendQuotationNotificationSMS(quotation, customerInfo);
+      if (smsResult.success) {
+        console.log('Quotation SMS notification sent successfully');
+      } else {
+        console.log('Quotation SMS notification failed:', smsResult.message);
+      }
+    } catch (smsError) {
+      console.error('SMS notification failed:', smsError);
+      // Don't fail the email if SMS fails
+    }
+    
+  } catch (error) {
+    console.error('Quotation sent email failed:', error);
+    // Don't throw error, just log it to prevent route from failing
   }
 };
 
@@ -1053,7 +1366,9 @@ const testEmailService = async (testEmail) => {
 module.exports = {
   sendWelcomeEmail,
   sendInquiryNotification,
+  sendInquiryConfirmationEmail,
   sendQuotationEmail,
+  sendQuotationSentEmail,
   sendOrderConfirmation,
   sendDispatchNotification,
   sendPaymentConfirmation,
