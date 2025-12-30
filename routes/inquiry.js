@@ -726,7 +726,7 @@ router.get('/admin/all', authenticateToken, requireBackOffice, async (req, res) 
     // ✅ ULTRA FAST: Simple find() with lean() - much faster than aggregation
     // Use index on createdAt for fast sorting
     const inquiries = await Inquiry.find(statusFilter)
-      .select('inquiryNumber status customer expectedDeliveryDate createdAt quotation')
+      .select('inquiryNumber status customer expectedDeliveryDate createdAt quotation files parts')
       .sort({ createdAt: -1 }) // Uses index
       .limit(limit)
       .skip(skip)
@@ -771,7 +771,9 @@ router.get('/admin/all', authenticateToken, requireBackOffice, async (req, res) 
         : null,
       quotation: inquiry.quotation 
         ? inquiry.quotation.toString() 
-        : null
+        : null,
+      files: inquiry.files || [],
+      parts: inquiry.parts || []
     }));
     
     // Get total count for pagination (only if needed)
