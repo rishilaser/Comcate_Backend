@@ -641,26 +641,28 @@ router.get('/', authenticateToken, async (req, res) => {
       page === 1 ? Promise.resolve(0) : Quotation.countDocuments(query)
     ]);
 
-    // ULTRA OPTIMIZED: Batch fetch inquiries only (skip customer for speed)
+    // Batch fetch inquiries with customer data
     const inquiryIds = [...new Set(quotations.map(q => q.inquiryId).filter(Boolean))];
     let inquiryMap = {};
     
     if (inquiryIds.length > 0) {
-      // Fetch inquiries with minimal fields only
+      // Fetch inquiries with customer populated
       const inquiries = await Inquiry.find({ _id: { $in: inquiryIds } })
-        .select('_id inquiryNumber')
+        .select('_id inquiryNumber customer')
+        .populate('customer', 'firstName lastName companyName email')
         .lean();
       
-      // Map inquiries (no customer data for speed)
+      // Map inquiries with customer data
       inquiries.forEach(inq => {
         inquiryMap[inq._id.toString()] = {
           _id: inq._id,
-          inquiryNumber: inq.inquiryNumber
+          inquiryNumber: inq.inquiryNumber,
+          customer: inq.customer || null
         };
       });
     }
 
-    // Map quotations with inquiry data
+    // Map quotations with inquiry data (including customer)
     const quotationsWithInquiry = quotations.map(quotation => ({
       ...quotation,
       inquiry: inquiryMap[quotation.inquiryId] || null

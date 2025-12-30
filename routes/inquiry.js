@@ -736,45 +736,88 @@ router.get('/admin/all', authenticateToken, requireBackOffice, async (req, res) 
     const customerIds = inquiries
       .map(i => i.customer)
       .filter(id => id && mongoose.Types.ObjectId.isValid(id))
-      .map(id => new mongoose.Types.ObjectId(id));
+      .map(id => {
+        // Handle both ObjectId and string formats
+        if (id instanceof mongoose.Types.ObjectId) {
+          return id;
+        }
+        return new mongoose.Types.ObjectId(id.toString());
+      });
+    
+    // Remove duplicates
+    const uniqueCustomerIds = [...new Set(customerIds.map(id => id.toString()))].map(id => new mongoose.Types.ObjectId(id));
     
     const customerMap = {};
-    if (customerIds.length > 0) {
-      const customers = await User.find({ _id: { $in: customerIds } })
-        .select('firstName lastName companyName')
+    if (uniqueCustomerIds.length > 0) {
+      const customers = await User.find({ _id: { $in: uniqueCustomerIds } })
+        .select('firstName lastName companyName email')
         .lean();
       
       customers.forEach(c => {
         if (c && c._id) {
-          customerMap[c._id.toString()] = {
+          // Store with string key for reliable lookup
+          const idStr = c._id.toString();
+          customerMap[idStr] = {
             firstName: c.firstName || null,
             lastName: c.lastName || null,
-            companyName: c.companyName || null
+            companyName: c.companyName || null,
+            email: c.email || null
           };
         }
       });
+      
+      console.log(`✅ Fetched ${customers.length} customers for ${inquiries.length} inquiries`);
+      console.log(`Customer IDs in map:`, Object.keys(customerMap));
     }
     
     // ✅ FAST: Simple transformation
-    const inquiriesWithCustomer = inquiries.map(inquiry => ({
-      _id: inquiry._id.toString(),
-      inquiryNumber: inquiry.inquiryNumber || null,
-      status: inquiry.status || 'pending',
-      customer: inquiry.customer 
-        ? (customerMap[inquiry.customer.toString()] || null)
-        : null,
-      expectedDeliveryDate: inquiry.expectedDeliveryDate 
-        ? inquiry.expectedDeliveryDate.toISOString() 
-        : null,
-      createdAt: inquiry.createdAt 
-        ? inquiry.createdAt.toISOString() 
-        : null,
-      quotation: inquiry.quotation 
-        ? inquiry.quotation.toString() 
-        : null,
-      files: inquiry.files || [],
-      parts: inquiry.parts || []
-    }));
+    const inquiriesWithCustomer = inquiries.map(inquiry => {
+      // Handle customer lookup - convert customer ID to string for map lookup
+      let customerData = null;
+      if (inquiry.customer) {
+        let customerIdStr = null;
+        
+        // Convert customer ID to string format
+        if (inquiry.customer instanceof mongoose.Types.ObjectId) {
+          customerIdStr = inquiry.customer.toString();
+        } else if (typeof inquiry.customer === 'object' && inquiry.customer._id) {
+          customerIdStr = inquiry.customer._id.toString();
+        } else if (typeof inquiry.customer === 'string') {
+          customerIdStr = inquiry.customer;
+        } else {
+          customerIdStr = String(inquiry.customer);
+        }
+        
+        customerData = customerMap[customerIdStr] || null;
+        
+        // Debug log if customer not found
+        if (!customerData) {
+          console.log(`⚠️ Customer not found for inquiry ${inquiry.inquiryNumber}:`, {
+            customerId: customerIdStr,
+            customerIdType: typeof inquiry.customer,
+            availableIds: Object.keys(customerMap).slice(0, 5)
+          });
+        }
+      }
+      
+      return {
+        _id: inquiry._id.toString(),
+        inquiryNumber: inquiry.inquiryNumber || null,
+        status: inquiry.status || 'pending',
+        customer: customerData,
+        expectedDeliveryDate: inquiry.expectedDeliveryDate 
+          ? inquiry.expectedDeliveryDate.toISOString() 
+          : null,
+        createdAt: inquiry.createdAt 
+          ? inquiry.createdAt.toISOString() 
+          : null,
+        quotation: inquiry.quotation 
+          ? inquiry.quotation.toString() 
+          : null,
+        files: inquiry.files || [],
+        parts: inquiry.parts || []
+      };
+    });
     
     // Get total count for pagination (only if needed)
     const totalCount = req.query.includeTotal === 'true' 
