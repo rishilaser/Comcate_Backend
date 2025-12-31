@@ -777,6 +777,45 @@ router.get('/admin/all', authenticateToken, requireBackOffice, async (req, res) 
       console.log(`✅ Fetched ${customers.length} customers for ${inquiries.length} inquiries`);
       console.log(`Customer IDs in map:`, Object.keys(customerMap));
     }
+
+    // ✅ FAST: Batch fetch quotations in one query
+    const quotationIds = inquiries
+      .map(i => i.quotation)
+      .filter(id => id && mongoose.Types.ObjectId.isValid(id))
+      .map(id => {
+        // Handle both ObjectId and string formats
+        if (id instanceof mongoose.Types.ObjectId) {
+          return id;
+        }
+        return new mongoose.Types.ObjectId(id.toString());
+      });
+    
+    // Remove duplicates
+    const uniqueQuotationIds = [...new Set(quotationIds.map(id => id.toString()))].map(id => new mongoose.Types.ObjectId(id));
+    
+    const quotationMap = {};
+    if (uniqueQuotationIds.length > 0) {
+      const Quotation = require('../models/Quotation');
+      const quotations = await Quotation.find({ _id: { $in: uniqueQuotationIds } })
+        .select('quotationNumber status totalAmount validUntil')
+        .lean();
+      
+      quotations.forEach(q => {
+        if (q && q._id) {
+          // Store with string key for reliable lookup
+          const idStr = q._id.toString();
+          quotationMap[idStr] = {
+            _id: q._id,
+            quotationNumber: q.quotationNumber || null,
+            status: q.status || null,
+            totalAmount: q.totalAmount || 0,
+            validUntil: q.validUntil || null
+          };
+        }
+      });
+      
+      console.log(`✅ Fetched ${quotations.length} quotations for ${inquiries.length} inquiries`);
+    }
     
     // ✅ FAST: Simple transformation
     const inquiriesWithCustomer = inquiries.map(inquiry => {
@@ -807,6 +846,25 @@ router.get('/admin/all', authenticateToken, requireBackOffice, async (req, res) 
           });
         }
       }
+
+      // Handle quotation lookup - convert quotation ID to string for map lookup
+      let quotationData = null;
+      if (inquiry.quotation) {
+        let quotationIdStr = null;
+        
+        // Convert quotation ID to string format
+        if (inquiry.quotation instanceof mongoose.Types.ObjectId) {
+          quotationIdStr = inquiry.quotation.toString();
+        } else if (typeof inquiry.quotation === 'object' && inquiry.quotation._id) {
+          quotationIdStr = inquiry.quotation._id.toString();
+        } else if (typeof inquiry.quotation === 'string') {
+          quotationIdStr = inquiry.quotation;
+        } else {
+          quotationIdStr = String(inquiry.quotation);
+        }
+        
+        quotationData = quotationMap[quotationIdStr] || null;
+      }
       
       return {
         _id: inquiry._id.toString(),
@@ -819,9 +877,7 @@ router.get('/admin/all', authenticateToken, requireBackOffice, async (req, res) 
         createdAt: inquiry.createdAt 
           ? inquiry.createdAt.toISOString() 
           : null,
-        quotation: inquiry.quotation 
-          ? inquiry.quotation.toString() 
-          : null,
+        quotation: quotationData,
         files: inquiry.files || [],
         parts: inquiry.parts || []
       };

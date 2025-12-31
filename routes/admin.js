@@ -128,6 +128,40 @@ router.put('/orders/:id/status', authenticateToken, requireBackOffice, [
     }
 
     const oldStatus = order.status;
+
+    // If status is same, allow it (idempotent operation - no change needed)
+    if (oldStatus === status) {
+      // Status is already set, just return success
+      return res.json({
+        success: true,
+        message: 'Order status is already set to this value',
+        order: {
+          id: order._id,
+          orderNumber: order.orderNumber,
+          status: order.status,
+          updatedAt: order.updatedAt
+        }
+      });
+    }
+
+    // Validate status transition
+    const validTransitions = {
+      'pending': ['confirmed', 'cancelled'],
+      'confirmed': ['in_production', 'cancelled'],
+      'in_production': ['ready_for_dispatch', 'cancelled'],
+      'ready_for_dispatch': ['dispatched', 'cancelled'],
+      'dispatched': ['delivered'],
+      'delivered': [],
+      'cancelled': []
+    };
+
+    if (validTransitions[oldStatus] && !validTransitions[oldStatus].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status transition from ${oldStatus} to ${status}`
+      });
+    }
+
     order.status = status;
     order.updatedAt = new Date();
 
@@ -152,17 +186,37 @@ router.put('/orders/:id/status', authenticateToken, requireBackOffice, [
     // Set specific timestamps based on status
     if (status === 'confirmed' && !order.confirmedAt) {
       order.confirmedAt = new Date();
-    } else if (status === 'in_production' && !order.production.startDate) {
-      order.production.startDate = new Date();
+    } else if (status === 'in_production') {
+      // Initialize production object if it doesn't exist
+      if (!order.production) {
+        order.production = {};
+      }
+      if (!order.production.startDate) {
+        order.production.startDate = new Date();
+      }
       // Set estimated delivery time if provided
       if (estimatedDelivery) {
         order.production.estimatedCompletion = new Date(estimatedDelivery);
       }
     } else if (status === 'ready_for_dispatch') {
+      // Initialize production object if it doesn't exist
+      if (!order.production) {
+        order.production = {};
+      }
       order.production.actualCompletion = new Date();
     } else if (status === 'dispatched') {
-      order.dispatch.dispatchedAt = new Date();
+      // Initialize dispatch object if it doesn't exist
+      if (!order.dispatch) {
+        order.dispatch = {};
+      }
+      if (!order.dispatch.dispatchedAt) {
+        order.dispatch.dispatchedAt = new Date();
+      }
     } else if (status === 'delivered') {
+      // Initialize dispatch object if it doesn't exist
+      if (!order.dispatch) {
+        order.dispatch = {};
+      }
       order.dispatch.actualDelivery = new Date();
     }
 

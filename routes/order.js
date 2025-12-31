@@ -189,92 +189,7 @@ router.post('/', authenticateToken, [
     quotation.orderCreatedAt = new Date();
     await quotation.save();
 
-    // Send payment confirmation email to admin (as per requirement)
-    try {
-      const { sendPaymentConfirmation } = require('../services/emailService');
-      await sendPaymentConfirmation(order);
-    } catch (emailError) {
-      console.error('Payment confirmation email failed:', emailError);
-      // Don't fail the operation if email fails
-    }
-
-    // Send order confirmation email to customer
-    try {
-      await sendOrderConfirmation(order);
-    } catch (emailError) {
-      console.error('Order confirmation email failed:', emailError);
-      // Don't fail the operation if email fails
-    }
-
-    // Create notification for customer about order confirmation
-    try {
-      const Notification = require('../models/Notification');
-      await Notification.createNotification({
-        title: 'Order Confirmed',
-        message: `Your order ${order.orderNumber} has been confirmed and is now in production. ${paymentMethod === 'cod' ? 'Payment will be collected on delivery.' : 'Payment completed successfully.'} We will keep you updated on the progress.`,
-        type: 'success',
-        userId: order.customer,
-        relatedEntity: {
-          type: 'order',
-          entityId: order._id
-        },
-        metadata: {
-          orderNumber: order.orderNumber,
-          totalAmount: order.totalAmount,
-          paymentMethod: paymentMethod,
-          status: order.status,
-          confirmedAt: new Date()
-        }
-      });
-    } catch (notificationError) {
-      console.error('Failed to create customer order confirmation notification:', notificationError);
-    }
-
-    // Create notification for all admin users about payment received
-    try {
-      const User = require('../models/User');
-      const Notification = require('../models/Notification');
-      const adminUsers = await User.find({ role: { $in: ['admin', 'backoffice', 'subadmin'] } });
-      
-      for (const admin of adminUsers) {
-        await Notification.createNotification({
-          title: 'Payment Received',
-          message: `Payment of $${order.totalAmount} received for order ${order.orderNumber}. Customer: ${order.customer?.firstName || 'Unknown'} ${order.customer?.lastName || ''}. Payment method: ${paymentMethod}`,
-          type: 'success',
-          userId: admin._id,
-          relatedEntity: {
-            type: 'order',
-            entityId: order._id
-          },
-          metadata: {
-            orderNumber: order.orderNumber,
-            paymentAmount: order.totalAmount,
-            paymentMethod: paymentMethod,
-            customerName: `${order.customer?.firstName || 'Unknown'} ${order.customer?.lastName || ''}`,
-            paidAt: new Date()
-          }
-        });
-      }
-    } catch (notificationError) {
-      console.error('Failed to create admin payment notifications:', notificationError);
-    }
-
-    // Send real-time WebSocket notification to customer
-    try {
-      const websocketService = require('../services/websocketService');
-      websocketService.notifyOrderCreated(order);
-    } catch (wsError) {
-      console.error('WebSocket order notification failed:', wsError);
-    }
-
-    // Send real-time WebSocket notification to admin users
-    try {
-      const websocketService = require('../services/websocketService');
-      websocketService.notifyPaymentReceived(order, order.totalAmount, `dummy_${order._id}`);
-    } catch (wsError) {
-      console.error('WebSocket admin payment notification failed:', wsError);
-    }
-
+    // Send response immediately (don't wait for emails/notifications)
     console.log('✅ ORDER CREATED SUCCESSFULLY - Sending response');
     console.log('Order ID:', order._id);
     console.log('Order Number:', order.orderNumber);
@@ -289,6 +204,98 @@ router.post('/', authenticateToken, [
         status: order.status,
         totalAmount: order.totalAmount,
         parts: order.parts
+      }
+    });
+
+    // Send emails, notifications, and WebSocket updates asynchronously (don't block response)
+    setImmediate(async () => {
+      try {
+        // Send payment confirmation email to admin (as per requirement)
+        try {
+          const { sendPaymentConfirmation } = require('../services/emailService');
+          await sendPaymentConfirmation(order);
+        } catch (emailError) {
+          console.error('Payment confirmation email failed:', emailError);
+        }
+
+        // Send order confirmation email to customer
+        try {
+          const { sendOrderConfirmation } = require('../services/emailService');
+          await sendOrderConfirmation(order);
+        } catch (emailError) {
+          console.error('Order confirmation email failed:', emailError);
+        }
+
+        // Create notification for customer about order confirmation
+        try {
+          const Notification = require('../models/Notification');
+          await Notification.createNotification({
+            title: 'Order Confirmed',
+            message: `Your order ${order.orderNumber} has been confirmed and is now in production. ${paymentMethod === 'cod' ? 'Payment will be collected on delivery.' : 'Payment completed successfully.'} We will keep you updated on the progress.`,
+            type: 'success',
+            userId: order.customer,
+            relatedEntity: {
+              type: 'order',
+              entityId: order._id
+            },
+            metadata: {
+              orderNumber: order.orderNumber,
+              totalAmount: order.totalAmount,
+              paymentMethod: paymentMethod,
+              status: order.status,
+              confirmedAt: new Date()
+            }
+          });
+        } catch (notificationError) {
+          console.error('Failed to create customer order confirmation notification:', notificationError);
+        }
+
+        // Create notification for all admin users about payment received
+        try {
+          const User = require('../models/User');
+          const Notification = require('../models/Notification');
+          const adminUsers = await User.find({ role: { $in: ['admin', 'backoffice', 'subadmin'] } });
+          
+          for (const admin of adminUsers) {
+            await Notification.createNotification({
+              title: 'Payment Received',
+              message: `Payment of $${order.totalAmount} received for order ${order.orderNumber}. Customer: ${order.customer?.firstName || 'Unknown'} ${order.customer?.lastName || ''}. Payment method: ${paymentMethod}`,
+              type: 'success',
+              userId: admin._id,
+              relatedEntity: {
+                type: 'order',
+                entityId: order._id
+              },
+              metadata: {
+                orderNumber: order.orderNumber,
+                paymentAmount: order.totalAmount,
+                paymentMethod: paymentMethod,
+                customerName: `${order.customer?.firstName || 'Unknown'} ${order.customer?.lastName || ''}`,
+                paidAt: new Date()
+              }
+            });
+          }
+        } catch (notificationError) {
+          console.error('Failed to create admin payment notifications:', notificationError);
+        }
+
+        // Send real-time WebSocket notification to customer
+        try {
+          const websocketService = require('../services/websocketService');
+          websocketService.notifyOrderCreated(order);
+        } catch (wsError) {
+          console.error('WebSocket order notification failed:', wsError);
+        }
+
+        // Send real-time WebSocket notification to admin users
+        try {
+          const websocketService = require('../services/websocketService');
+          websocketService.notifyPaymentReceived(order, order.totalAmount, `dummy_${order._id}`);
+        } catch (wsError) {
+          console.error('WebSocket admin payment notification failed:', wsError);
+        }
+      } catch (error) {
+        console.error('Error in async order creation tasks:', error);
       }
     });
 
@@ -402,12 +409,25 @@ router.put('/:id/delivery-time', authenticateToken, requireBackOffice, [
       });
     }
 
+    // Initialize production object if it doesn't exist
+    if (!order.production) {
+      order.production = {};
+    }
+
     // Update order with delivery time
     order.production.estimatedCompletion = new Date(estimatedDelivery);
     if (notes) {
       order.production.notes = notes;
     }
-    order.status = 'in_production';
+
+    // Only change status to in_production if order is confirmed or pending
+    // Don't change status if already in production or later stages
+    if (order.status === 'pending' || order.status === 'confirmed') {
+      order.status = 'in_production';
+      if (!order.production.startDate) {
+        order.production.startDate = new Date();
+      }
+    }
     order.updatedAt = new Date();
 
     await order.save();
@@ -533,65 +553,77 @@ router.put('/:id/status', authenticateToken, requireBackOffice, [
 
     await order.save();
 
-    // Send real-time WebSocket notification for status update
-    try {
-      const websocketService = require('../services/websocketService');
-      websocketService.notifyOrderStatusUpdate(order, oldStatus, status);
-    } catch (wsError) {
-      console.error('WebSocket status update notification failed:', wsError);
-    }
-
-    // Send status update email to customer
-    try {
-      await sendOrderConfirmation(order);
-      console.log('Order status update email sent to customer:', order.customer.email);
-    } catch (emailError) {
-      console.error('Status update email failed:', emailError);
-      // Don't fail the operation if email fails
-    }
-
-    // Send delivery time notification if delivery time was updated
-    if (status === 'confirmed' && order.production?.estimatedCompletion) {
-      try {
-        const { sendDeliveryTimeNotification } = require('../services/emailService');
-        await sendDeliveryTimeNotification(order);
-        console.log('Delivery time notification sent to customer:', order.customer.email);
-      } catch (deliveryEmailError) {
-        console.error('Delivery time notification failed:', deliveryEmailError);
-        // Don't fail the operation if email fails
-      }
-    }
-
-    // Create notification for customer if status changed to dispatched
-    // Note: Dispatch notifications are handled in dispatch.js to avoid duplicates
-    if (status === 'dispatched' && oldStatus !== 'dispatched') {
-      // Only create notification if dispatch details are not available (manual status update)
-      if (!order.dispatch || !order.dispatch.trackingNumber) {
-        await Notification.createNotification({
-          title: 'Order Dispatched',
-          message: `Your order ${order.orderNumber} has been dispatched! We will update you with tracking details soon.`,
-          type: 'success',
-          userId: order.customer._id,
-          relatedEntity: {
-            type: 'order',
-            entityId: order._id
-          },
-          metadata: {
-            orderNumber: order.orderNumber,
-            dispatchedAt: new Date()
-          }
-        });
-      }
-    }
-
+    // Send response immediately (don't wait for emails/notifications)
     res.json({
       success: true,
-      message: 'Order status updated and customer notified',
+      message: 'Order status updated successfully',
       order: {
         id: order._id,
         orderNumber: order.orderNumber,
         status: order.status,
         updatedAt: order.updatedAt
+      }
+    });
+
+    // Send emails, notifications, and WebSocket updates asynchronously (don't block response)
+    setImmediate(async () => {
+      try {
+        // Send real-time WebSocket notification for status update
+        try {
+          const websocketService = require('../services/websocketService');
+          websocketService.notifyOrderStatusUpdate(order, oldStatus, status);
+        } catch (wsError) {
+          console.error('WebSocket status update notification failed:', wsError);
+        }
+
+        // Send status update email to customer
+        try {
+          const { sendOrderConfirmation } = require('../services/emailService');
+          await sendOrderConfirmation(order);
+          console.log('Order status update email sent to customer:', order.customer.email);
+        } catch (emailError) {
+          console.error('Status update email failed:', emailError);
+        }
+
+        // Send delivery time notification if delivery time was updated
+        if (status === 'confirmed' && order.production?.estimatedCompletion) {
+          try {
+            const { sendDeliveryTimeNotification } = require('../services/emailService');
+            await sendDeliveryTimeNotification(order);
+            console.log('Delivery time notification sent to customer:', order.customer.email);
+          } catch (deliveryEmailError) {
+            console.error('Delivery time notification failed:', deliveryEmailError);
+          }
+        }
+
+        // Create notification for customer if status changed to dispatched
+        // Note: Dispatch notifications are handled in dispatch.js to avoid duplicates
+        if (status === 'dispatched' && oldStatus !== 'dispatched') {
+          try {
+            const Notification = require('../models/Notification');
+            // Only create notification if dispatch details are not available (manual status update)
+            if (!order.dispatch || !order.dispatch.trackingNumber) {
+              await Notification.createNotification({
+                title: 'Order Dispatched',
+                message: `Your order ${order.orderNumber} has been dispatched! We will update you with tracking details soon.`,
+                type: 'success',
+                userId: order.customer._id,
+                relatedEntity: {
+                  type: 'order',
+                  entityId: order._id
+                },
+                metadata: {
+                  orderNumber: order.orderNumber,
+                  dispatchedAt: new Date()
+                }
+              });
+            }
+          } catch (notificationError) {
+            console.error('Failed to create dispatch notification:', notificationError);
+          }
+        }
+      } catch (error) {
+        console.error('Error in async order status update tasks:', error);
       }
     });
 
