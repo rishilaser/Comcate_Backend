@@ -59,6 +59,102 @@ const sendSMS = async (phoneNumber, message) => {
   }
 };
 
+// Send login notification email to customer
+const sendLoginNotificationEmail = async (user) => {
+  try {
+    console.log('=== SENDING LOGIN NOTIFICATION EMAIL ===');
+    console.log('User:', user.email);
+    console.log('Role:', user.role);
+    
+    const transporter = createTransporter();
+    
+    // If no transporter (SMTP not configured), just log and return
+    if (!transporter) {
+      console.log('SMTP not configured. Login notification email skipped for:', user.email);
+      return;
+    }
+    
+    // Only send to customers
+    if (user.role !== 'customer') {
+      console.log('Login notification email skipped - user is not a customer');
+      return;
+    }
+    
+    const customerName = `${user.firstName} ${user.lastName}`.trim() || 'Valued Customer';
+    const loginTime = new Date().toLocaleString();
+    const loginDate = new Date().toLocaleDateString();
+    
+    const mailOptions = {
+      from: process.env.SMTP_FROM || 'noreply@247cutbend.com',
+      to: user.email,
+      subject: 'Login Notification - 247 CutBend',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+            <h1 style="margin: 0; font-size: 28px; font-weight: 700;">247 CUTBEND</h1>
+            <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.9;">SHEET METAL PARTS ON DEMAND</p>
+            <h2 style="margin: 20px 0 10px 0; font-size: 24px; font-weight: 600;">Login Notification</h2>
+          </div>
+          
+          <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <h3 style="color: #333; margin-top: 0;">Dear ${customerName},</h3>
+            <p style="color: #555; line-height: 1.6;">We wanted to inform you that someone has successfully logged into your 247 CutBend account.</p>
+            
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #4CAF50;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">🔐 Login Details</h3>
+              <p style="margin: 8px 0; color: #555;"><strong>Email:</strong> ${user.email}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Login Date:</strong> ${loginDate}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Login Time:</strong> ${loginTime}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Account:</strong> ${user.companyName || 'N/A'}</p>
+            </div>
+            
+            <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 25px 0; border-left: 4px solid #ffc107;">
+              <h3 style="margin-top: 0; color: #333;">⚠️ Security Notice</h3>
+              <p style="margin: 0; color: #555; line-height: 1.6;">If you did not perform this login, please:</p>
+              <ul style="margin: 10px 0; padding-left: 20px; color: #555;">
+                <li>Change your password immediately</li>
+                <li>Contact our support team</li>
+                <li>Review your account activity</li>
+              </ul>
+            </div>
+            
+            <div style="background-color: #e3f2fd; padding: 15px; border-radius: 5px; margin: 25px 0; border-left: 4px solid #2196F3;">
+              <h3 style="margin-top: 0; color: #333;">💡 Quick Actions</h3>
+              <ul style="margin: 10px 0; padding-left: 20px; color: #555;">
+                <li>View your recent inquiries and quotations</li>
+                <li>Track your orders</li>
+                <li>Update your profile information</li>
+                <li>Submit new inquiries</li>
+              </ul>
+            </div>
+            
+            <p style="margin-top: 30px; color: #555;">Thank you for choosing 247 CutBend for your sheet metal manufacturing needs. We're here to help!</p>
+          </div>
+          
+          <div style="background-color: #333; color: white; padding: 20px; text-align: center; border-radius: 0 0 8px 8px; font-size: 12px;">
+            <p style="margin: 0 0 5px 0;">© 2024 247 CutBend. All rights reserved.</p>
+            <p style="margin: 0; opacity: 0.8;">Delivering Factory Direct Quality Sheet Metal Parts Since 2005</p>
+          </div>
+        </div>
+      `
+    };
+
+    console.log('Sending login notification email with options:', {
+      from: mailOptions.from,
+      to: mailOptions.to,
+      subject: mailOptions.subject
+    });
+
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Login notification email sent successfully!');
+    console.log('Message ID:', result.messageId);
+    
+  } catch (error) {
+    console.error('Login notification email failed:', error);
+    // Don't throw error, just log it to prevent login from failing
+  }
+};
+
 // Send welcome email to new customers
 const sendWelcomeEmail = async (email, firstName) => {
   try {
@@ -972,14 +1068,20 @@ const sendOrderConfirmation = async (order) => {
           
           <div style="padding: 20px;">
             <h3>Dear ${order.customer.firstName || 'Customer'},</h3>
-            <p>Your order has been confirmed and is now in production!</p>
+            <p style="color: #555; line-height: 1.6;">Great news! Your order has been confirmed by our team and is now ready for production!</p>
+            
+            <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #4CAF50;">
+              <h3 style="margin-top: 0; color: #333;">✅ Order Confirmed</h3>
+              <p style="margin: 5px 0; color: #555;">Your order has been reviewed and confirmed by our team. We're now preparing to start production.</p>
+            </div>
             
             <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
               <h3 style="margin-top: 0;">Order Details:</h3>
               <p><strong>Order Number:</strong> ${order.orderNumber}</p>
-              <p><strong>Total Amount:</strong> ${order.currency || 'USD'} ${order.totalAmount}</p>
-              <p><strong>Payment Status:</strong> ${order.payment ? order.payment.status : 'Completed'}</p>
+              <p><strong>Total Amount:</strong> ${order.currency || 'USD'} $${order.totalAmount}</p>
+              <p><strong>Payment Status:</strong> ${order.payment ? (order.payment.status === 'completed' ? '✅ Completed' : order.payment.status) : 'Completed'}</p>
               <p><strong>Order Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}</p>
+              <p><strong>Confirmed Date:</strong> ${order.confirmedAt ? new Date(order.confirmedAt).toLocaleDateString() : new Date().toLocaleDateString()}</p>
             </div>
             
             <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 20px 0;">
@@ -1047,37 +1149,139 @@ const sendOrderConfirmation = async (order) => {
 // Send dispatch notification
 const sendDispatchNotification = async (order) => {
   try {
+    console.log('=== SENDING DISPATCH NOTIFICATION EMAIL TO CUSTOMER ===');
+    console.log('Order ID:', order._id);
+    console.log('Order Number:', order.orderNumber);
+    console.log('Customer:', order.customer);
+    console.log('Customer Email:', order.customer?.email);
+    console.log('Dispatch Object:', order.dispatch);
+    console.log('Courier:', order.dispatch?.courier);
+    console.log('Tracking Number:', order.dispatch?.trackingNumber);
+    console.log('Dispatched At:', order.dispatch?.dispatchedAt);
+    
     const transporter = createTransporter();
+    
+    // If no transporter (SMTP not configured), just log and return
+    if (!transporter) {
+      console.log('❌ SMTP not configured. Dispatch notification email skipped for:', order.customer?.email);
+      return;
+    }
+    
+    // Validate customer email
+    if (!order.customer) {
+      console.error('❌ No customer object found for order:', order._id);
+      return;
+    }
+    
+    if (!order.customer.email || order.customer.email === 'customer@example.com') {
+      console.error('❌ No valid customer email found for order:', order._id);
+      console.error('Customer email value:', order.customer.email);
+      return;
+    }
+    
+    if (!order.dispatch) {
+      console.warn('⚠️ Dispatch object not found, creating empty dispatch object');
+      order.dispatch = {};
+    }
+    
+    if (!order.dispatch.courier) {
+      console.warn('⚠️ Courier name not found in dispatch object');
+    }
+    
+    const customerName = `${order.customer.firstName || ''} ${order.customer.lastName || ''}`.trim() || 'Valued Customer';
+    const estimatedDelivery = order.dispatch?.estimatedDelivery ? new Date(order.dispatch.estimatedDelivery) : null;
+    const deliveryDate = estimatedDelivery ? estimatedDelivery.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : 'TBD';
+    const deliveryTime = estimatedDelivery ? estimatedDelivery.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : 'TBD';
+    const dispatchedDate = order.dispatch?.dispatchedAt ? new Date(order.dispatch.dispatchedAt) : new Date();
     
     const mailOptions = {
       from: process.env.SMTP_FROM || 'noreply@247cutbend.com',
       to: order.customer.email,
-      subject: `Order Dispatched - ${order.orderNumber}`,
+      subject: `Order Dispatched - ${order.orderNumber} - 247 CutBend`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background-color: #2196F3; color: white; padding: 20px; text-align: center;">
-            <h1 style="margin: 0;">Order Dispatched</h1>
-            <p style="margin: 5px 0;">Order Number: ${order.orderNumber}</p>
+          <div style="background-color: #2196F3; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+            <h1 style="margin: 0; font-size: 28px; font-weight: 700;">247 CUTBEND</h1>
+            <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.9;">SHEET METAL PARTS ON DEMAND</p>
+            <h2 style="margin: 20px 0 10px 0; font-size: 24px; font-weight: 600;">Order Dispatched! 🚚</h2>
           </div>
           
-          <div style="padding: 20px;">
-            <h3>Dear ${order.customer.firstName},</h3>
-            <p>Great news! Your order has been dispatched and is on its way to you.</p>
+          <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <h3 style="color: #333; margin-top: 0;">Dear ${customerName},</h3>
+            <p style="color: #555; line-height: 1.6; font-size: 16px;">Great news! Your order <strong>${order.orderNumber}</strong> has been dispatched and is on its way to you!</p>
             
-            <h3>Dispatch Details:</h3>
-            <p><strong>Tracking Number:</strong> ${order.dispatch ? order.dispatch.trackingNumber : 'N/A'}</p>
-            <p><strong>Courier:</strong> ${order.dispatch ? order.dispatch.courier : 'N/A'}</p>
-            <p><strong>Dispatched Date:</strong> ${order.dispatch && order.dispatch.dispatchedAt ? new Date(order.dispatch.dispatchedAt).toLocaleDateString() : 'N/A'}</p>
-            <p><strong>Estimated Delivery:</strong> ${order.dispatch && order.dispatch.estimatedDelivery ? new Date(order.dispatch.estimatedDelivery).toLocaleDateString() : 'N/A'}</p>
+            <div style="background-color: #e3f2fd; padding: 25px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #2196F3; text-align: center;">
+              <h3 style="margin: 0 0 20px 0; color: #333; font-size: 20px; font-weight: 600;">🚚 Dispatch Information</h3>
+              <div style="background-color: white; padding: 20px; border-radius: 8px; margin-bottom: 15px;">
+                <p style="margin: 0 0 10px 0; color: #666; font-size: 14px; text-transform: uppercase;">Courier Name</p>
+                <p style="margin: 0; color: #1976D2; font-size: 28px; font-weight: 700;">${order.dispatch?.courier || 'N/A'}</p>
+              </div>
+              <div style="background-color: white; padding: 20px; border-radius: 8px;">
+                <p style="margin: 0 0 10px 0; color: #666; font-size: 14px; text-transform: uppercase;">Dispatched Date</p>
+                <p style="margin: 0; color: #1976D2; font-size: 24px; font-weight: 700;">${dispatchedDate.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                <p style="margin: 10px 0 0 0; color: #555; font-size: 16px;">${dispatchedDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}</p>
+              </div>
+            </div>
             
-            <p style="margin-top: 30px;">Please log in to your account to track your order.</p>
+            ${estimatedDelivery ? `
+            <div style="background-color: #e8f5e8; padding: 25px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #4CAF50; text-align: center;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 20px; font-weight: 600;">📦 Expected Delivery Date & Time</h3>
+              <p style="margin: 0; color: #2e7d32; font-size: 24px; font-weight: 700;">${deliveryDate}</p>
+              <p style="margin: 10px 0 0 0; color: #2e7d32; font-size: 20px; font-weight: 600;">at ${deliveryTime}</p>
+              <p style="margin: 15px 0 0 0; color: #555; font-size: 14px;">You will receive your order on this date at this time</p>
+            </div>
+            ` : ''}
+            
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #2196F3;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">📋 Order Details</h3>
+              <p style="margin: 8px 0; color: #555;"><strong>Order Number:</strong> ${order.orderNumber}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Tracking Number:</strong> ${order.dispatch?.trackingNumber || 'N/A'}</p>
+              ${order.dispatch?.trackingNumber ? `
+              <p style="margin: 8px 0; color: #555;">You can use this tracking number to track your shipment with ${order.dispatch?.courier || 'the courier'}</p>
+              ` : ''}
+            </div>
+            
+            ${order.deliveryAddress ? `
+            <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #ffc107;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">📍 Delivery Address</h3>
+              <p style="margin: 8px 0; color: #555; padding-left: 20px;">
+                ${order.deliveryAddress.street || ''}<br>
+                ${order.deliveryAddress.city || ''}, ${order.deliveryAddress.state || ''} ${order.deliveryAddress.postalCode || ''}<br>
+                ${order.deliveryAddress.country || ''}
+              </p>
+            </div>
+            ` : ''}
+            
+            <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 25px 0; border-left: 4px solid #4CAF50;">
+              <h3 style="margin-top: 0; color: #333;">💡 Important Information</h3>
+              <ul style="margin: 10px 0; padding-left: 20px; color: #555;">
+                <li>Please ensure someone is available at the delivery address on <strong>${deliveryDate}</strong> at <strong>${deliveryTime}</strong></li>
+                <li>You can track your order using the tracking number provided above</li>
+                <li>If you need to change the delivery date or address, please contact our support team immediately</li>
+                <li>Log in to your account to track your order status</li>
+              </ul>
+            </div>
+            
+            <p style="margin-top: 30px; color: #555;">Thank you for choosing 247 CutBend. We look forward to delivering your order on time!</p>
+          </div>
+          
+          <div style="background-color: #333; color: white; padding: 20px; text-align: center; border-radius: 0 0 8px 8px; font-size: 12px;">
+            <p style="margin: 0 0 5px 0;">© 2024 247 CutBend. All rights reserved.</p>
+            <p style="margin: 0; opacity: 0.8;">Delivering Factory Direct Quality Sheet Metal Parts Since 2005</p>
           </div>
         </div>
       `
     };
 
-    await transporter.sendMail(mailOptions);
-    console.log('Dispatch notification email sent successfully');
+    console.log('Sending dispatch notification email with options:', {
+      from: mailOptions.from,
+      to: mailOptions.to,
+      subject: mailOptions.subject
+    });
+
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Dispatch notification email sent successfully!');
+    console.log('Message ID:', result.messageId);
     
     // Send SMS notification
     try {
@@ -1095,6 +1299,117 @@ const sendDispatchNotification = async (order) => {
   } catch (error) {
     console.error('Dispatch notification email failed:', error);
     throw error;
+  }
+};
+
+// Send payment confirmation email to customer
+const sendCustomerPaymentConfirmation = async (order) => {
+  try {
+    console.log('=== SENDING CUSTOMER PAYMENT CONFIRMATION EMAIL ===');
+    console.log('Order:', order.orderNumber);
+    console.log('Customer:', order.customer?.email);
+    
+    const transporter = createTransporter();
+    
+    // If no transporter (SMTP not configured), just log and return
+    if (!transporter) {
+      console.log('SMTP not configured. Customer payment confirmation email skipped for:', order.customer?.email);
+      return;
+    }
+    
+    // Validate customer email
+    if (!order.customer || !order.customer.email || order.customer.email === 'customer@example.com') {
+      console.error('No valid customer email found for order:', order._id);
+      return;
+    }
+    
+    const customerName = `${order.customer.firstName || ''} ${order.customer.lastName || ''}`.trim() || 'Valued Customer';
+    const paymentDate = order.payment?.paidAt ? new Date(order.payment.paidAt) : new Date();
+    const paymentMethod = order.payment?.method || 'Online Payment';
+    const transactionId = order.payment?.transactionId || 'N/A';
+    
+    const mailOptions = {
+      from: process.env.SMTP_FROM || 'noreply@247cutbend.com',
+      to: order.customer.email,
+      subject: `Payment Successful - Order ${order.orderNumber} - 247 CutBend`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+            <h1 style="margin: 0; font-size: 28px; font-weight: 700;">247 CUTBEND</h1>
+            <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.9;">SHEET METAL PARTS ON DEMAND</p>
+            <h2 style="margin: 20px 0 10px 0; font-size: 24px; font-weight: 600;">Payment Successful! ✅</h2>
+          </div>
+          
+          <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <h3 style="color: #333; margin-top: 0;">Dear ${customerName},</h3>
+            <p style="color: #555; line-height: 1.6;">Thank you for your payment! We have successfully received your payment for order <strong>${order.orderNumber}</strong>.</p>
+            
+            <div style="background-color: #e8f5e8; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #4CAF50;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">💳 Payment Details</h3>
+              <p style="margin: 8px 0; color: #555;"><strong>Order Number:</strong> ${order.orderNumber}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Payment Amount:</strong> ${order.currency || 'USD'} $${order.totalAmount || order.payment?.amount || 0}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Payment Method:</strong> ${paymentMethod}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Transaction ID:</strong> ${transactionId}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Payment Date:</strong> ${paymentDate.toLocaleDateString()} at ${paymentDate.toLocaleTimeString()}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Payment Status:</strong> <span style="color: #4CAF50; font-weight: 600;">Completed</span></p>
+            </div>
+            
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #2196F3;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">📦 Order Information</h3>
+              <p style="margin: 8px 0; color: #555;"><strong>Order Status:</strong> ${order.status ? order.status.charAt(0).toUpperCase() + order.status.slice(1).replace('_', ' ') : 'Confirmed'}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Order Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}</p>
+              ${order.deliveryAddress ? `
+              <p style="margin: 8px 0; color: #555;"><strong>Delivery Address:</strong></p>
+              <p style="margin: 8px 0; color: #555; padding-left: 20px;">
+                ${order.deliveryAddress.street || ''}<br>
+                ${order.deliveryAddress.city || ''}, ${order.deliveryAddress.state || ''} ${order.deliveryAddress.postalCode || ''}<br>
+                ${order.deliveryAddress.country || ''}
+              </p>
+              ` : ''}
+            </div>
+            
+            <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 25px 0; border-left: 4px solid #ffc107;">
+              <h3 style="margin-top: 0; color: #333;">📋 What's Next?</h3>
+              <ul style="margin: 10px 0; padding-left: 20px; color: #555;">
+                <li>Your order has been confirmed and is now in production</li>
+                <li>We will keep you updated on the production progress</li>
+                <li>You will receive notifications for each milestone</li>
+                <li>Log in to your account to track your order status</li>
+              </ul>
+            </div>
+            
+            <div style="background-color: #e3f2fd; padding: 15px; border-radius: 5px; margin: 25px 0; border-left: 4px solid #2196F3;">
+              <h3 style="margin-top: 0; color: #333;">💡 Important Information</h3>
+              <p style="margin: 0; color: #555; line-height: 1.6;">
+                Please save this email for your records. Your transaction ID is <strong>${transactionId}</strong>. 
+                If you have any questions about your payment or order, please contact our support team with your order number.
+              </p>
+            </div>
+            
+            <p style="margin-top: 30px; color: #555;">Thank you for choosing 247 CutBend for your sheet metal manufacturing needs. We appreciate your business!</p>
+          </div>
+          
+          <div style="background-color: #333; color: white; padding: 20px; text-align: center; border-radius: 0 0 8px 8px; font-size: 12px;">
+            <p style="margin: 0 0 5px 0;">© 2024 247 CutBend. All rights reserved.</p>
+            <p style="margin: 0; opacity: 0.8;">Delivering Factory Direct Quality Sheet Metal Parts Since 2005</p>
+          </div>
+        </div>
+      `
+    };
+
+    console.log('Sending customer payment confirmation email with options:', {
+      from: mailOptions.from,
+      to: mailOptions.to,
+      subject: mailOptions.subject
+    });
+
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Customer payment confirmation email sent successfully!');
+    console.log('Message ID:', result.messageId);
+    
+  } catch (error) {
+    console.error('Customer payment confirmation email failed:', error);
+    // Don't throw error, just log it to prevent payment from failing
   }
 };
 
@@ -1202,6 +1517,222 @@ const sendDeliveryConfirmation = async (order) => {
   } catch (error) {
     console.error('Delivery confirmation email failed:', error);
     throw error;
+  }
+};
+
+// Send production started notification to customer
+const sendProductionStartedEmail = async (order) => {
+  try {
+    console.log('=== SENDING PRODUCTION STARTED EMAIL TO CUSTOMER ===');
+    console.log('Order:', order.orderNumber);
+    console.log('Customer:', order.customer?.email);
+    
+    const transporter = createTransporter();
+    
+    // If no transporter (SMTP not configured), just log and return
+    if (!transporter) {
+      console.log('SMTP not configured. Production started email skipped for:', order.customer?.email);
+      return;
+    }
+    
+    // Validate customer email
+    if (!order.customer || !order.customer.email || order.customer.email === 'customer@example.com') {
+      console.error('No valid customer email found for order:', order._id);
+      return;
+    }
+    
+    const customerName = `${order.customer.firstName || ''} ${order.customer.lastName || ''}`.trim() || 'Valued Customer';
+    const productionStartDate = order.production?.startDate ? new Date(order.production.startDate) : new Date();
+    const estimatedCompletion = order.production?.estimatedCompletion ? new Date(order.production.estimatedCompletion) : null;
+    
+    const mailOptions = {
+      from: process.env.SMTP_FROM || 'noreply@247cutbend.com',
+      to: order.customer.email,
+      subject: `Production Started - Order ${order.orderNumber} - 247 CutBend`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background-color: #2196F3; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+            <h1 style="margin: 0; font-size: 28px; font-weight: 700;">247 CUTBEND</h1>
+            <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.9;">SHEET METAL PARTS ON DEMAND</p>
+            <h2 style="margin: 20px 0 10px 0; font-size: 24px; font-weight: 600;">Production Started! 🏭</h2>
+          </div>
+          
+          <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <h3 style="color: #333; margin-top: 0;">Dear ${customerName},</h3>
+            <p style="color: #555; line-height: 1.6;">Great news! Production has started for your order <strong>${order.orderNumber}</strong>. We're now manufacturing your sheet metal parts!</p>
+            
+            <div style="background-color: #e3f2fd; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #2196F3;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">🏭 Production Information</h3>
+              <p style="margin: 8px 0; color: #555;"><strong>Order Number:</strong> ${order.orderNumber}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Production Start Date:</strong> ${productionStartDate.toLocaleDateString()} at ${productionStartDate.toLocaleTimeString()}</p>
+              ${estimatedCompletion ? `
+              <p style="margin: 8px 0; color: #555;"><strong>Estimated Completion:</strong> ${estimatedCompletion.toLocaleDateString()}</p>
+              ` : ''}
+              <p style="margin: 8px 0; color: #555;"><strong>Status:</strong> <span style="color: #2196F3; font-weight: 600;">In Production</span></p>
+            </div>
+            
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #4CAF50;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">📦 Order Details</h3>
+              <p style="margin: 8px 0; color: #555;"><strong>Total Amount:</strong> ${order.currency || 'USD'} $${order.totalAmount}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Order Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}</p>
+              ${order.parts && order.parts.length > 0 ? `
+              <p style="margin: 8px 0; color: #555;"><strong>Number of Parts:</strong> ${order.parts.length}</p>
+              ` : ''}
+            </div>
+            
+            <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 25px 0; border-left: 4px solid #ffc107;">
+              <h3 style="margin-top: 0; color: #333;">📋 What's Next?</h3>
+              <ul style="margin: 10px 0; padding-left: 20px; color: #555;">
+                <li>Your order is now being manufactured in our facility</li>
+                <li>We will keep you updated on the production progress</li>
+                <li>You will receive a notification when production is complete</li>
+                <li>Once ready, your order will be prepared for dispatch</li>
+                <li>Log in to your account to track your order status</li>
+              </ul>
+            </div>
+            
+            <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 25px 0; border-left: 4px solid #4CAF50;">
+              <h3 style="margin-top: 0; color: #333;">💡 Quality Assurance</h3>
+              <p style="margin: 0; color: #555; line-height: 1.6;">
+                Our team is committed to delivering high-quality sheet metal parts. We follow strict quality control processes 
+                to ensure your order meets our standards. If you have any questions during production, please don't hesitate to contact us.
+              </p>
+            </div>
+            
+            <p style="margin-top: 30px; color: #555;">Thank you for choosing 247 CutBend. We're working hard to deliver your order on time!</p>
+          </div>
+          
+          <div style="background-color: #333; color: white; padding: 20px; text-align: center; border-radius: 0 0 8px 8px; font-size: 12px;">
+            <p style="margin: 0 0 5px 0;">© 2024 247 CutBend. All rights reserved.</p>
+            <p style="margin: 0; opacity: 0.8;">Delivering Factory Direct Quality Sheet Metal Parts Since 2005</p>
+          </div>
+        </div>
+      `
+    };
+
+    console.log('Sending production started email with options:', {
+      from: mailOptions.from,
+      to: mailOptions.to,
+      subject: mailOptions.subject
+    });
+
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Production started email sent successfully!');
+    console.log('Message ID:', result.messageId);
+    
+  } catch (error) {
+    console.error('Production started email failed:', error);
+    // Don't throw error, just log it to prevent operation from failing
+  }
+};
+
+// Send order ready for dispatch notification to customer
+const sendOrderReadyEmail = async (order) => {
+  try {
+    console.log('=== SENDING ORDER READY EMAIL TO CUSTOMER ===');
+    console.log('Order:', order.orderNumber);
+    console.log('Customer:', order.customer?.email);
+    
+    const transporter = createTransporter();
+    
+    // If no transporter (SMTP not configured), just log and return
+    if (!transporter) {
+      console.log('SMTP not configured. Order ready email skipped for:', order.customer?.email);
+      return;
+    }
+    
+    // Validate customer email
+    if (!order.customer || !order.customer.email || order.customer.email === 'customer@example.com') {
+      console.error('No valid customer email found for order:', order._id);
+      return;
+    }
+    
+    const customerName = `${order.customer.firstName || ''} ${order.customer.lastName || ''}`.trim() || 'Valued Customer';
+    const completionDate = order.production?.actualCompletion ? new Date(order.production.actualCompletion) : new Date();
+    
+    const mailOptions = {
+      from: process.env.SMTP_FROM || 'noreply@247cutbend.com',
+      to: order.customer.email,
+      subject: `Order Ready for Dispatch - ${order.orderNumber} - 247 CutBend`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background-color: #FF9800; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+            <h1 style="margin: 0; font-size: 28px; font-weight: 700;">247 CUTBEND</h1>
+            <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.9;">SHEET METAL PARTS ON DEMAND</p>
+            <h2 style="margin: 20px 0 10px 0; font-size: 24px; font-weight: 600;">Order Ready! ✅</h2>
+          </div>
+          
+          <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <h3 style="color: #333; margin-top: 0;">Dear ${customerName},</h3>
+            <p style="color: #555; line-height: 1.6;">Excellent news! Your order <strong>${order.orderNumber}</strong> has been completed and is now ready for dispatch!</p>
+            
+            <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #FF9800;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">📦 Order Status</h3>
+              <p style="margin: 8px 0; color: #555;"><strong>Order Number:</strong> ${order.orderNumber}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Status:</strong> <span style="color: #FF9800; font-weight: 600;">Ready for Dispatch</span></p>
+              <p style="margin: 8px 0; color: #555;"><strong>Production Completed:</strong> ${completionDate.toLocaleDateString()} at ${completionDate.toLocaleTimeString()}</p>
+            </div>
+            
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #4CAF50;">
+              <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">📋 Order Summary</h3>
+              <p style="margin: 8px 0; color: #555;"><strong>Total Amount:</strong> ${order.currency || 'USD'} $${order.totalAmount}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Order Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}</p>
+              ${order.parts && order.parts.length > 0 ? `
+              <p style="margin: 8px 0; color: #555;"><strong>Number of Parts:</strong> ${order.parts.length}</p>
+              ` : ''}
+              ${order.deliveryAddress ? `
+              <p style="margin: 8px 0; color: #555;"><strong>Delivery Address:</strong></p>
+              <p style="margin: 8px 0; color: #555; padding-left: 20px;">
+                ${order.deliveryAddress.street || ''}<br>
+                ${order.deliveryAddress.city || ''}, ${order.deliveryAddress.state || ''} ${order.deliveryAddress.postalCode || ''}<br>
+                ${order.deliveryAddress.country || ''}
+              </p>
+              ` : ''}
+            </div>
+            
+            <div style="background-color: #e3f2fd; padding: 15px; border-radius: 5px; margin: 25px 0; border-left: 4px solid #2196F3;">
+              <h3 style="margin-top: 0; color: #333;">📋 What's Next?</h3>
+              <ul style="margin: 10px 0; padding-left: 20px; color: #555;">
+                <li>Your order has been completed and quality checked</li>
+                <li>It's now ready to be dispatched to your delivery address</li>
+                <li>We will prepare it for shipping shortly</li>
+                <li>You will receive a dispatch notification with tracking details once it's shipped</li>
+                <li>Log in to your account to track your order status</li>
+              </ul>
+            </div>
+            
+            <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 25px 0; border-left: 4px solid #4CAF50;">
+              <h3 style="margin-top: 0; color: #333;">💡 Quality Assurance</h3>
+              <p style="margin: 0; color: #555; line-height: 1.6;">
+                Your order has passed our quality control checks and is ready for dispatch. We ensure all parts meet our 
+                high standards before shipping. Thank you for your patience during the production process!
+              </p>
+            </div>
+            
+            <p style="margin-top: 30px; color: #555;">We're excited to deliver your order to you soon. Thank you for choosing 247 CutBend!</p>
+          </div>
+          
+          <div style="background-color: #333; color: white; padding: 20px; text-align: center; border-radius: 0 0 8px 8px; font-size: 12px;">
+            <p style="margin: 0 0 5px 0;">© 2024 247 CutBend. All rights reserved.</p>
+            <p style="margin: 0; opacity: 0.8;">Delivering Factory Direct Quality Sheet Metal Parts Since 2005</p>
+          </div>
+        </div>
+      `
+    };
+
+    console.log('Sending order ready email with options:', {
+      from: mailOptions.from,
+      to: mailOptions.to,
+      subject: mailOptions.subject
+    });
+
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Order ready email sent successfully!');
+    console.log('Message ID:', result.messageId);
+    
+  } catch (error) {
+    console.error('Order ready email failed:', error);
+    // Don't throw error, just log it to prevent operation from failing
   }
 };
 
@@ -1365,6 +1896,7 @@ const testEmailService = async (testEmail) => {
 
 module.exports = {
   sendWelcomeEmail,
+  sendLoginNotificationEmail,
   sendInquiryNotification,
   sendInquiryConfirmationEmail,
   sendQuotationEmail,
@@ -1372,6 +1904,9 @@ module.exports = {
   sendOrderConfirmation,
   sendDispatchNotification,
   sendPaymentConfirmation,
+  sendCustomerPaymentConfirmation,
+  sendProductionStartedEmail,
+  sendOrderReadyEmail,
   sendDeliveryConfirmation,
   sendDeliveryTimeNotification,
   sendSMS,

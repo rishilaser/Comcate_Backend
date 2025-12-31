@@ -226,14 +226,75 @@ router.put('/orders/:id/status', authenticateToken, requireBackOffice, [
 
     await order.save();
 
+    // Re-fetch order from database to ensure all fields are properly loaded
+    const updatedOrder = await Order.findById(order._id)
+      .populate('customer', 'firstName lastName email phoneNumber');
+
+    if (!updatedOrder) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found after update'
+      });
+    }
+
+    // Send order confirmation email to customer when admin confirms the order
+    if (status === 'confirmed' && oldStatus !== 'confirmed') {
+      try {
+        console.log('📧 Sending order confirmation email to customer...');
+        const { sendOrderConfirmation } = require('../services/emailService');
+        await sendOrderConfirmation(updatedOrder);
+        console.log('✅ Order confirmation email sent successfully to customer:', updatedOrder.customer?.email);
+      } catch (emailError) {
+        console.error('❌ Order confirmation email failed:', emailError);
+        // Don't fail the operation if email fails
+      }
+    }
+
+    // Send production started email to customer when admin starts production
+    if (status === 'in_production' && oldStatus !== 'in_production') {
+      try {
+        console.log('📧 Sending production started email to customer...');
+        const { sendProductionStartedEmail } = require('../services/emailService');
+        await sendProductionStartedEmail(updatedOrder);
+        console.log('✅ Production started email sent successfully to customer:', updatedOrder.customer?.email);
+      } catch (emailError) {
+        console.error('❌ Production started email failed:', emailError);
+        // Don't fail the operation if email fails
+      }
+    }
+
+    // Note: Order ready email removed - customer will only receive email when order is dispatched
+
+    // Send dispatch notification email to customer when admin dispatches the order
+    if (status === 'dispatched' && oldStatus !== 'dispatched') {
+      try {
+        console.log('📧 Sending dispatch notification email to customer...');
+        console.log('Order dispatch details:', {
+          courier: updatedOrder.dispatch?.courier,
+          trackingNumber: updatedOrder.dispatch?.trackingNumber,
+          dispatchedAt: updatedOrder.dispatch?.dispatchedAt
+        });
+        console.log('Customer email:', updatedOrder.customer?.email);
+        
+        const { sendDispatchNotification } = require('../services/emailService');
+        await sendDispatchNotification(updatedOrder);
+        console.log('✅ Dispatch notification email sent successfully to customer:', updatedOrder.customer?.email);
+      } catch (emailError) {
+        console.error('❌ Dispatch notification email failed:', emailError);
+        console.error('Email error details:', emailError.message);
+        console.error('Email error stack:', emailError.stack);
+        // Don't fail the operation if email fails
+      }
+    }
+
     res.json({
       success: true,
       message: 'Order status updated successfully',
       order: {
-        id: order._id,
-        orderNumber: order.orderNumber,
-        status: order.status,
-        updatedAt: order.updatedAt
+        id: updatedOrder._id,
+        orderNumber: updatedOrder.orderNumber,
+        status: updatedOrder.status,
+        updatedAt: updatedOrder.updatedAt
       }
     });
 
@@ -290,17 +351,54 @@ router.put('/orders/:id/delivery', authenticateToken, requireBackOffice, [
       order.dispatch.notes = notes;
     }
 
+    // Initialize dispatch object if it doesn't exist
+    if (!order.dispatch) {
+      order.dispatch = {};
+    }
+
     order.updatedAt = new Date();
     await order.save();
+
+    // Re-fetch order from database to ensure all fields are properly loaded
+    const updatedOrder = await Order.findById(order._id)
+      .populate('customer', 'firstName lastName email phoneNumber');
+
+    if (!updatedOrder) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found after update'
+      });
+    }
+
+    // Send dispatch notification email to customer
+    try {
+      console.log('📧 Sending dispatch notification email to customer...');
+      console.log('Order dispatch details:', {
+        courier: updatedOrder.dispatch?.courier,
+        trackingNumber: updatedOrder.dispatch?.trackingNumber,
+        dispatchedAt: updatedOrder.dispatch?.dispatchedAt,
+        estimatedDelivery: updatedOrder.dispatch?.estimatedDelivery
+      });
+      console.log('Customer email:', updatedOrder.customer?.email);
+      
+      const { sendDispatchNotification } = require('../services/emailService');
+      await sendDispatchNotification(updatedOrder);
+      console.log('✅ Dispatch notification email sent successfully to customer:', updatedOrder.customer?.email);
+    } catch (emailError) {
+      console.error('❌ Dispatch notification email failed:', emailError);
+      console.error('Email error details:', emailError.message);
+      console.error('Email error stack:', emailError.stack);
+      // Don't fail the operation if email fails
+    }
 
     res.json({
       success: true,
       message: 'Delivery details updated successfully',
       order: {
-        id: order._id,
-        orderNumber: order.orderNumber,
-        status: order.status,
-        dispatch: order.dispatch
+        id: updatedOrder._id,
+        orderNumber: updatedOrder.orderNumber,
+        status: updatedOrder.status,
+        dispatch: updatedOrder.dispatch
       }
     });
 

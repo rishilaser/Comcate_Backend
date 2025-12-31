@@ -218,20 +218,29 @@ router.post('/', authenticateToken, [
           console.error('Payment confirmation email failed:', emailError);
         }
 
-        // Send order confirmation email to customer
-        try {
-          const { sendOrderConfirmation } = require('../services/emailService');
-          await sendOrderConfirmation(order);
-        } catch (emailError) {
-          console.error('Order confirmation email failed:', emailError);
+        // Send payment confirmation email to customer (if payment is completed)
+        if (order.payment?.status === 'completed' && paymentMethod !== 'cod') {
+          try {
+            console.log('📧 Sending payment confirmation email to customer...');
+            const { sendCustomerPaymentConfirmation } = require('../services/emailService');
+            await sendCustomerPaymentConfirmation(order);
+            console.log('✅ Payment confirmation email sent successfully to customer:', order.customer?.email);
+          } catch (emailError) {
+            console.error('❌ Customer payment confirmation email failed:', emailError);
+            // Don't fail the operation if email fails
+          }
         }
 
-        // Create notification for customer about order confirmation
+        // Note: Order confirmation email will be sent separately when admin confirms the order
+
+        // Create notification for customer about payment/order
         try {
           const Notification = require('../models/Notification');
           await Notification.createNotification({
-            title: 'Order Confirmed',
-            message: `Your order ${order.orderNumber} has been confirmed and is now in production. ${paymentMethod === 'cod' ? 'Payment will be collected on delivery.' : 'Payment completed successfully.'} We will keep you updated on the progress.`,
+            title: paymentMethod === 'cod' ? 'Order Created' : 'Payment Successful',
+            message: paymentMethod === 'cod' 
+              ? `Your order ${order.orderNumber} has been created. Payment will be collected on delivery.`
+              : `Your payment of $${order.totalAmount} for order ${order.orderNumber} has been received successfully. Your order will be confirmed by our team shortly.`,
             type: 'success',
             userId: order.customer,
             relatedEntity: {
@@ -432,15 +441,7 @@ router.put('/:id/delivery-time', authenticateToken, requireBackOffice, [
 
     await order.save();
 
-    // Send delivery time notification to customer
-    try {
-      const { sendDeliveryTimeNotification } = require('../services/emailService');
-      await sendDeliveryTimeNotification(order);
-      console.log('Delivery time notification sent to customer:', order.customer.email);
-    } catch (emailError) {
-      console.error('Delivery time notification failed:', emailError);
-      // Don't fail the operation if email fails
-    }
+    // Note: Delivery time notification email removed - customer will only receive email when order is dispatched
 
     // Create notification for customer about delivery time update
     try {
@@ -585,16 +586,7 @@ router.put('/:id/status', authenticateToken, requireBackOffice, [
           console.error('Status update email failed:', emailError);
         }
 
-        // Send delivery time notification if delivery time was updated
-        if (status === 'confirmed' && order.production?.estimatedCompletion) {
-          try {
-            const { sendDeliveryTimeNotification } = require('../services/emailService');
-            await sendDeliveryTimeNotification(order);
-            console.log('Delivery time notification sent to customer:', order.customer.email);
-          } catch (deliveryEmailError) {
-            console.error('Delivery time notification failed:', deliveryEmailError);
-          }
-        }
+        // Note: Delivery time notification email removed - customer will only receive email when order is dispatched
 
         // Create notification for customer if status changed to dispatched
         // Note: Dispatch notifications are handled in dispatch.js to avoid duplicates
@@ -640,12 +632,24 @@ router.put('/:id/status', authenticateToken, requireBackOffice, [
 router.put('/:id/dispatch', authenticateToken, requireBackOffice, [
   body('courier').notEmpty().withMessage('Courier name is required'),
   body('trackingNumber').notEmpty().withMessage('Tracking number is required'),
-  body('estimatedDelivery').optional().isISO8601().withMessage('Valid delivery date is required'),
+  body('estimatedDelivery')
+    .optional()
+    .custom((value) => {
+      // If value is empty, null, or undefined, it's valid (optional field)
+      if (!value || value === '' || value === null || value === undefined) {
+        return true;
+      }
+      // If value exists, validate it's a valid date
+      const date = new Date(value);
+      return !isNaN(date.getTime());
+    })
+    .withMessage('Valid delivery date is required'),
   body('notes').optional().isString()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.error('Validation errors:', errors.array());
       return res.status(400).json({
         success: false,
         message: 'Validation failed',
@@ -665,13 +669,19 @@ router.put('/:id/dispatch', authenticateToken, requireBackOffice, [
       });
     }
 
+    // Initialize dispatch object if it doesn't exist
+    if (!order.dispatch) {
+      order.dispatch = {};
+    }
+
     // Update dispatch details
     order.dispatch.courier = courier;
     order.dispatch.trackingNumber = trackingNumber;
     order.dispatch.dispatchedAt = new Date();
     order.status = 'dispatched';
     
-    if (estimatedDelivery) {
+    // Only set estimatedDelivery if it's provided and not empty
+    if (estimatedDelivery && estimatedDelivery.trim() !== '') {
       order.dispatch.estimatedDelivery = new Date(estimatedDelivery);
     }
     
@@ -682,49 +692,7 @@ router.put('/:id/dispatch', authenticateToken, requireBackOffice, [
     order.updatedAt = new Date();
     await order.save();
 
-    // Send real-time WebSocket notification for dispatch update
-    try {
-      const websocketService = require('../services/websocketService');
-      websocketService.notifyDispatchUpdate(order);
-    } catch (wsError) {
-      console.error('WebSocket dispatch notification failed:', wsError);
-    }
-
-    // Send dispatch notification email to customer
-    try {
-      await sendOrderConfirmation(order);
-      console.log('Dispatch notification email sent to customer:', order.customer.email);
-    } catch (emailError) {
-      console.error('Dispatch notification email failed:', emailError);
-      // Don't fail the operation if email fails
-    }
-
-    // Create notification for customer about dispatch details update
-    try {
-      await Notification.createNotification({
-        title: 'Dispatch Details Updated',
-        message: `Dispatch details have been updated for order ${order.orderNumber}. Tracking Number: ${order.dispatch.trackingNumber}, Courier: ${order.dispatch.courier}. Estimated delivery: ${order.dispatch.estimatedDelivery ? new Date(order.dispatch.estimatedDelivery).toLocaleDateString() : 'TBD'}.`,
-        type: 'info',
-        userId: order.customer._id,
-        relatedEntity: {
-          type: 'order',
-          entityId: order._id
-        },
-        metadata: {
-          orderNumber: order.orderNumber,
-          trackingNumber: order.dispatch.trackingNumber,
-          courier: order.dispatch.courier,
-          estimatedDelivery: order.dispatch.estimatedDelivery,
-          updatedAt: new Date()
-        }
-      });
-      
-      console.log(`Created dispatch details update notification for customer: ${order.customer.email}`);
-    } catch (notificationError) {
-      console.error('Failed to create dispatch details update notification:', notificationError);
-      // Don't fail the operation if notification creation fails
-    }
-
+    // Return response immediately for fast API response (< 1 second)
     res.json({
       success: true,
       message: 'Dispatch details updated and customer notified',
@@ -733,6 +701,77 @@ router.put('/:id/dispatch', authenticateToken, requireBackOffice, [
         orderNumber: order.orderNumber,
         status: order.status,
         dispatch: order.dispatch
+      }
+    });
+
+    // Send notifications asynchronously in the background (non-blocking)
+    setImmediate(async () => {
+      try {
+        // Re-fetch order from database to ensure all fields are properly loaded for notifications
+        const updatedOrder = await Order.findById(order._id)
+          .populate('customer', 'firstName lastName email phoneNumber');
+
+        if (!updatedOrder) {
+          console.error('Order not found after update for notifications:', order._id);
+          return;
+        }
+
+        // Send real-time WebSocket notification for dispatch update
+        try {
+          const websocketService = require('../services/websocketService');
+          websocketService.notifyDispatchUpdate(updatedOrder);
+        } catch (wsError) {
+          console.error('WebSocket dispatch notification failed:', wsError);
+        }
+
+        // Send dispatch notification email to customer
+        try {
+          console.log('📧 Sending dispatch notification email to customer...');
+          console.log('Order dispatch details:', {
+            courier: updatedOrder.dispatch?.courier,
+            trackingNumber: updatedOrder.dispatch?.trackingNumber,
+            dispatchedAt: updatedOrder.dispatch?.dispatchedAt,
+            estimatedDelivery: updatedOrder.dispatch?.estimatedDelivery
+          });
+          console.log('Customer email:', updatedOrder.customer?.email);
+          
+          const { sendDispatchNotification } = require('../services/emailService');
+          await sendDispatchNotification(updatedOrder);
+          console.log('✅ Dispatch notification email sent successfully to customer:', updatedOrder.customer?.email);
+        } catch (emailError) {
+          console.error('❌ Dispatch notification email failed:', emailError);
+          console.error('Email error details:', emailError.message);
+          // Don't fail the operation if email fails
+        }
+
+        // Create notification for customer about dispatch details update
+        try {
+          const Notification = require('../models/Notification');
+          await Notification.createNotification({
+            title: 'Dispatch Details Updated',
+            message: `Dispatch details have been updated for order ${updatedOrder.orderNumber}. Tracking Number: ${updatedOrder.dispatch.trackingNumber}, Courier: ${updatedOrder.dispatch.courier}. Estimated delivery: ${updatedOrder.dispatch.estimatedDelivery ? new Date(updatedOrder.dispatch.estimatedDelivery).toLocaleDateString() : 'TBD'}.`,
+            type: 'info',
+            userId: updatedOrder.customer._id,
+            relatedEntity: {
+              type: 'order',
+              entityId: updatedOrder._id
+            },
+            metadata: {
+              orderNumber: updatedOrder.orderNumber,
+              trackingNumber: updatedOrder.dispatch.trackingNumber,
+              courier: updatedOrder.dispatch.courier,
+              estimatedDelivery: updatedOrder.dispatch.estimatedDelivery,
+              updatedAt: new Date()
+            }
+          });
+          
+          console.log(`Created dispatch details update notification for customer: ${updatedOrder.customer.email}`);
+        } catch (notificationError) {
+          console.error('Failed to create dispatch details update notification:', notificationError);
+          // Don't fail the operation if notification creation fails
+        }
+      } catch (error) {
+        console.error('Error in background dispatch notifications:', error);
       }
     });
 

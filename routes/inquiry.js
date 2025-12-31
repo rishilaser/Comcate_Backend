@@ -8,7 +8,7 @@ const Inquiry = require('../models/Inquiry');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
 const Quotation = require('../models/Quotation');
-const { sendInquiryNotification } = require('../services/emailService');
+const { sendInquiryNotification, sendInquiryConfirmationEmail } = require('../services/emailService');
 const { processExcelFile } = require('../services/excelService');
 // ✅ CLOUDINARY: Import will be done later with other functions
 const mongoose = require('mongoose');
@@ -573,8 +573,9 @@ router.post('/', authenticateToken, upload.array('files'), handleMulterErrors, [
         
         // Send confirmation email to customer (async)
         try {
-          const { sendInquiryConfirmationEmail } = require('../services/emailService');
+          console.log('📧 Sending inquiry confirmation email to customer...');
           await sendInquiryConfirmationEmail(inquiry);
+          console.log('✅ Inquiry confirmation email sent successfully to customer:', inquiry.customer?.email);
         } catch (customerEmailError) {
           console.error('❌ Customer inquiry confirmation email failed:', customerEmailError.message);
         }

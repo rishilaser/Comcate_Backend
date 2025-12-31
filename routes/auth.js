@@ -2,7 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
-const { sendWelcomeEmail } = require('../services/emailService');
+const { sendWelcomeEmail, sendLoginNotificationEmail } = require('../services/emailService');
 
 const router = express.Router();
 
@@ -162,6 +162,16 @@ router.post('/login', [
     console.log('Login successful for user:', user.email);
     console.log('User role:', user.role);
     console.log('Token generated:', token ? 'Yes' : 'No');
+
+    // Send login notification email to customer
+    if (user.role === 'customer') {
+      try {
+        await sendLoginNotificationEmail(user);
+      } catch (emailError) {
+        console.error('Login notification email failed:', emailError);
+        // Don't fail the login if email fails
+      }
+    }
 
     res.json({
       success: true,

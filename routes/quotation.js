@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { body, validationResult } = require('express-validator');
 const { authenticateToken } = require('../middleware/auth');
-const { sendQuotationEmail } = require('../services/emailService');
+const { sendQuotationEmail, sendQuotationSentEmail } = require('../services/emailService');
 const { sendSMS } = require('../services/smsService');
 const pdfService = require('../services/pdfService');
 const Quotation = require('../models/Quotation');
@@ -972,12 +972,14 @@ router.post('/:id/send', authenticateToken, async (req, res) => {
 
         // Send email to customer using proper email service
         try {
-          console.log('Attempting to send quotation email to customer...');
-          const { sendQuotationSentEmail } = require('../services/emailService');
+          console.log('📧 Sending quotation email to customer...');
+          console.log('Customer Email:', quotation.customerInfo?.email);
+          console.log('Quotation Number:', quotation.quotationNumber);
           await sendQuotationSentEmail(quotation, inquiryNumber);
-          console.log('✅ Quotation email sent successfully to customer');
+          console.log('✅ Quotation email sent successfully to customer:', quotation.customerInfo?.email);
         } catch (emailError) {
-          console.error('❌ Email sending failed:', emailError);
+          console.error('❌ Quotation email sending failed:', emailError.message);
+          console.error('Error details:', emailError);
           // Don't fail the request if email fails, but log the error
         }
 

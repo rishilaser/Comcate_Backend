@@ -2,7 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const Order = require('../models/Order');
 const Quotation = require('../models/Quotation'); // Added Quotation model
-const { sendPaymentConfirmation } = require('../services/emailService');
+const { sendPaymentConfirmation, sendCustomerPaymentConfirmation } = require('../services/emailService');
 const { 
   createPaymentOrder, 
   verifyPayment, 
@@ -219,14 +219,17 @@ router.post('/process', authenticateToken, [
         // Don't fail the operation if email fails
       }
 
-      // Send order confirmation email to customer
+      // Send payment confirmation email to customer
       try {
-        const { sendOrderConfirmation } = require('../services/emailService');
-        await sendOrderConfirmation(order);
+        console.log('📧 Sending payment confirmation email to customer...');
+        await sendCustomerPaymentConfirmation(order);
+        console.log('✅ Payment confirmation email sent successfully to customer:', order.customer?.email);
       } catch (emailError) {
-        console.error('Order confirmation email failed:', emailError);
+        console.error('❌ Customer payment confirmation email failed:', emailError);
         // Don't fail the operation if email fails
       }
+
+      // Note: Order confirmation email will be sent separately when admin confirms the order
 
       res.json({
         success: true,
@@ -606,21 +609,24 @@ router.post('/update-order', authenticateToken, async (req, res) => {
       // Don't fail the operation if email fails
     }
 
-    // Send order confirmation email to customer
+    // Send payment confirmation email to customer
     try {
-      const { sendOrderConfirmation } = require('../services/emailService');
-      await sendOrderConfirmation(existingOrder);
+      console.log('📧 Sending payment confirmation email to customer...');
+      await sendCustomerPaymentConfirmation(existingOrder);
+      console.log('✅ Payment confirmation email sent successfully to customer:', existingOrder.customer?.email);
     } catch (emailError) {
-      console.error('Order confirmation email failed:', emailError);
+      console.error('❌ Customer payment confirmation email failed:', emailError);
       // Don't fail the operation if email fails
     }
 
-    // Create notification for customer about order confirmation
+    // Note: Order confirmation email will be sent separately when admin confirms the order
+
+    // Create notification for customer about payment success
     try {
       const Notification = require('../models/Notification');
       await Notification.createNotification({
-        title: 'Order Confirmed',
-        message: `Your order ${existingOrder.orderNumber} has been confirmed and is now in production. We will keep you updated on the progress.`,
+        title: 'Payment Successful',
+        message: `Your payment of $${paymentAmount} for order ${existingOrder.orderNumber} has been received successfully. Your order will be confirmed by our team shortly.`,
         type: 'success',
         userId: existingOrder.customer,
         relatedEntity: {
@@ -629,13 +635,13 @@ router.post('/update-order', authenticateToken, async (req, res) => {
         },
         metadata: {
           orderNumber: existingOrder.orderNumber,
-          totalAmount: existingOrder.totalAmount,
-          status: existingOrder.status,
-          confirmedAt: new Date()
+          totalAmount: paymentAmount,
+          paymentStatus: 'completed',
+          paidAt: new Date()
         }
       });
     } catch (notificationError) {
-      console.error('Failed to create customer order confirmation notification:', notificationError);
+      console.error('Failed to create customer payment notification:', notificationError);
     }
 
     // Create notification for all admin users about payment completion
@@ -878,19 +884,29 @@ router.post('/verify', authenticateToken, [
 
     await order.save();
 
-    // Send payment confirmation email
+    // Send payment confirmation email to back office
     try {
       await sendPaymentConfirmation(order);
     } catch (emailError) {
       console.error('Payment confirmation email failed:', emailError);
     }
 
-    // Create notification for customer about order confirmation (not payment)
+    // Send payment confirmation email to customer
+    try {
+      console.log('📧 Sending payment confirmation email to customer...');
+      await sendCustomerPaymentConfirmation(order);
+      console.log('✅ Payment confirmation email sent successfully to customer:', order.customer?.email);
+    } catch (emailError) {
+      console.error('❌ Customer payment confirmation email failed:', emailError);
+      // Don't fail the operation if email fails
+    }
+
+    // Create notification for customer about payment success
     try {
       const Notification = require('../models/Notification');
       await Notification.createNotification({
-        title: 'Order Confirmed',
-        message: `Your order ${order.orderNumber} has been confirmed and is now in production. We will keep you updated on the progress.`,
+        title: 'Payment Successful',
+        message: `Your payment of $${order.totalAmount} for order ${order.orderNumber} has been received successfully. Your order will be confirmed by our team shortly.`,
         type: 'success',
         userId: order.customer,
         relatedEntity: {
@@ -900,12 +916,12 @@ router.post('/verify', authenticateToken, [
         metadata: {
           orderNumber: order.orderNumber,
           totalAmount: order.totalAmount,
-          status: order.status,
-          confirmedAt: new Date()
+          paymentStatus: 'completed',
+          paidAt: new Date()
         }
       });
     } catch (notificationError) {
-      console.error('Failed to create customer order confirmation notification:', notificationError);
+      console.error('Failed to create customer payment notification:', notificationError);
     }
 
     // Create notification for all admin users about payment completion
