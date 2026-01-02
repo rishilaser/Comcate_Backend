@@ -331,22 +331,37 @@ router.get('/:id', authenticateToken, async (req, res) => {
     const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
     
     // OPTIMIZED: Use lean() for faster queries
+    // Include all fields needed for order tracking timeline
     if (isObjectId) {
       // Search by MongoDB ObjectId
       order = await Order.findById(id)
         .populate('customer', 'firstName lastName email companyName phone address')
         .populate('quotation', 'quotationNumber parts totalAmount createdAt')
         .populate('inquiry', 'inquiryNumber files parts deliveryAddress specialInstructions')
-        .lean()
-        .select('-inquiry.files.fileData'); // Exclude file data
+        .lean();
+      
+      // Exclude file data from inquiry if it exists
+      if (order && order.inquiry && order.inquiry.files) {
+        order.inquiry.files = order.inquiry.files.map(file => {
+          const { fileData, ...fileWithoutData } = file;
+          return fileWithoutData;
+        });
+      }
     } else {
       // Search by order number
       order = await Order.findOne({ orderNumber: id })
         .populate('customer', 'firstName lastName email companyName phone address')
         .populate('quotation', 'quotationNumber parts totalAmount createdAt')
         .populate('inquiry', 'inquiryNumber files parts deliveryAddress specialInstructions')
-        .lean()
-        .select('-inquiry.files.fileData'); // Exclude file data
+        .lean();
+      
+      // Exclude file data from inquiry if it exists
+      if (order && order.inquiry && order.inquiry.files) {
+        order.inquiry.files = order.inquiry.files.map(file => {
+          const { fileData, ...fileWithoutData } = file;
+          return fileWithoutData;
+        });
+      }
     }
 
     if (!order) {
