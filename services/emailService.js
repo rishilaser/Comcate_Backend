@@ -2,6 +2,8 @@ const nodemailer = require('nodemailer');
 const fs = require('fs');
 const path = require('path');
 const xlsx = require('xlsx');
+const axios = require('axios');
+const archiver = require('archiver');
 
 // Create transporter
 const createTransporter = () => {
@@ -437,46 +439,106 @@ const sendInquiryNotification = async (inquiry) => {
     
     // Initialize attachments array - Attach all original files
     const attachments = [];
+    const filesForZip = []; // Store files for ZIP creation
     
-    // Attach all uploaded files (PDF, DWG, DXF, Excel, etc.)
+    // Download all uploaded files (PDF, DWG, DXF, ZIP, Excel, etc.) for ZIP creation
     if (inquiry.files && inquiry.files.length > 0) {
-      console.log(`Processing ${inquiry.files.length} files for email attachment...`);
+      console.log(`Processing ${inquiry.files.length} files for email attachment and ZIP creation...`);
       
       for (const file of inquiry.files) {
         try {
-          // Check if file exists
-          if (fs.existsSync(file.filePath)) {
-            // Determine content type based on file extension
-            let contentType = 'application/octet-stream';
-            const fileName = file.originalName.toLowerCase();
-            
-            if (fileName.endsWith('.pdf')) {
-              contentType = 'application/pdf';
-            } else if (fileName.endsWith('.dwg')) {
-              contentType = 'application/dwg';
-            } else if (fileName.endsWith('.dxf')) {
-              contentType = 'application/dxf';
-            } else if (fileName.endsWith('.xls')) {
-              contentType = 'application/vnd.ms-excel';
-            } else if (fileName.endsWith('.xlsx') || fileName.endsWith('.xlsm')) {
-              contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+          let fileBuffer = null;
+          let filePath = file.filePath || file.cloudinaryUrl;
+          
+          // Check if file is from Cloudinary (URL) or local path
+          if (filePath && (filePath.startsWith('http://') || filePath.startsWith('https://'))) {
+            // File is in Cloudinary - download it
+            console.log(`☁️ Downloading file from Cloudinary: ${file.originalName}`);
+            try {
+              const response = await axios.get(filePath, {
+                responseType: 'arraybuffer',
+                timeout: 30000 // 30 second timeout
+              });
+              fileBuffer = Buffer.from(response.data);
+              console.log(`✅ Downloaded from Cloudinary: ${file.originalName}, size: ${fileBuffer.length} bytes`);
+            } catch (downloadError) {
+              console.error(`❌ Error downloading file from Cloudinary: ${downloadError.message}`);
+              continue; // Skip this file and continue with others
             }
-            
-            attachments.push({
-              filename: file.originalName,
-              path: file.filePath,
-              contentType: contentType
-            });
-            console.log(`✅ Added attachment: ${file.originalName} (${contentType})`);
+          } else if (filePath && fs.existsSync(filePath)) {
+            // File is local - read it
+            console.log(`📁 Reading local file: ${file.originalName}`);
+            fileBuffer = fs.readFileSync(filePath);
+            console.log(`✅ Read local file: ${file.originalName}, size: ${fileBuffer.length} bytes`);
           } else {
-            console.warn(`⚠️ File not found: ${file.filePath}`);
+            console.warn(`⚠️ File not found (neither Cloudinary URL nor local path): ${filePath}`);
+            continue; // Skip this file
           }
+          
+          // Store file for ZIP creation only (not attaching individually)
+          filesForZip.push({
+            name: file.originalName || file.fileName || 'file',
+            buffer: fileBuffer
+          });
+          
+          console.log(`✅ File prepared for ZIP: ${file.originalName} (${(fileBuffer.length / 1024).toFixed(2)} KB)`);
         } catch (error) {
-          console.error(`❌ Error adding attachment ${file.originalName}:`, error);
+          console.error(`❌ Error processing file ${file.originalName || 'unknown'}:`, error.message);
+          // Continue with other files even if one fails
         }
       }
       
-      console.log(`Total files attached: ${attachments.length}/${inquiry.files.length}`);
+      console.log(`Total files processed: ${filesForZip.length}/${inquiry.files.length}`);
+    }
+    
+    // Create ZIP file containing all inquiry files
+    if (filesForZip.length > 0) {
+      try {
+        console.log(`📦 Creating ZIP file with ${filesForZip.length} files...`);
+        
+        const zipBuffer = await new Promise((resolve, reject) => {
+          const archive = archiver('zip', {
+            zlib: { level: 9 } // Maximum compression
+          });
+          
+          const zipBuffers = [];
+          
+          archive.on('data', (chunk) => {
+            zipBuffers.push(chunk);
+          });
+          
+          archive.on('end', () => {
+            const zipBuffer = Buffer.concat(zipBuffers);
+            console.log(`✅ ZIP file created successfully: ${(zipBuffer.length / 1024).toFixed(2)} KB`);
+            resolve(zipBuffer);
+          });
+          
+          archive.on('error', (err) => {
+            console.error('❌ Error creating ZIP file:', err);
+            reject(err);
+          });
+          
+          // Add all files to ZIP
+          filesForZip.forEach(file => {
+            archive.append(file.buffer, { name: file.name });
+          });
+          
+          // Finalize the archive
+          archive.finalize();
+        });
+        
+        // Add ZIP file to attachments
+        attachments.push({
+          filename: `${inquiry.inquiryNumber}_All_Files.zip`,
+          content: zipBuffer,
+          contentType: 'application/zip'
+        });
+        
+        console.log(`✅ ZIP file added to email attachments: ${inquiry.inquiryNumber}_All_Files.zip`);
+      } catch (zipError) {
+        console.error('❌ Failed to create ZIP file:', zipError);
+        // Don't fail the email if ZIP creation fails
+      }
     }
 
     // Generate Consolidated Excel file with ALL data
@@ -692,41 +754,6 @@ const sendInquiryNotification = async (inquiry) => {
                     `).join('')}
                   </tbody>
                 </table>
-              </div>
-            </div>
-            
-            <!-- Attached Files Info -->
-            <div style="background-color: #e3f2fd; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #2196F3;">
-              <h3 style="margin: 0 0 15px 0; color: #1976D2; font-size: 18px; font-weight: 600;">📎 Email Attachments (${attachments.length + 1} files)</h3>
-              <div style="background-color: white; padding: 15px; border-radius: 6px;">
-                
-                <!-- Excel File Highlight -->
-                <div style="background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%); color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
-                  <p style="margin: 0 0 8px 0; font-size: 16px; font-weight: 600;">
-                    📊 ${inquiry.inquiryNumber}_Complete_Data.xlsx
-                  </p>
-                  <p style="margin: 0; font-size: 13px; opacity: 0.95;">
-                    Consolidated Excel with all inquiry data in 4 organized sheets
-                  </p>
-                </div>
-                
-                <p style="margin: 0 0 10px 0; color: #555; line-height: 1.6;">
-                  <strong>📥 Consolidated Excel File Contains:</strong>
-                </p>
-                <ul style="margin: 10px 0 15px 0; padding-left: 20px; color: #666;">
-                  <li>📋 Complete Inquiry Summary</li>
-                  <li>🔧 All Technical Specifications (${inquiry.parts?.length || 0} parts)</li>
-                  <li>📁 List of All Uploaded Files (${inquiry.files?.length || 0} files)</li>
-                  <li>📍 Delivery Information</li>
-                </ul>
-                
-                <p style="margin: 0 0 10px 0; color: #555; line-height: 1.6;">
-                  <strong>📄 Original Files Attached (${attachments.length}):</strong>
-                </p>
-                <ul style="margin: 10px 0; padding-left: 20px; color: #666; font-size: 13px;">
-                  ${attachments.slice(0, 5).map(att => `<li>${att.filename}</li>`).join('')}
-                  ${attachments.length > 5 ? `<li><em>... and ${attachments.length - 5} more files</em></li>` : ''}
-                </ul>
               </div>
             </div>
           </div>
