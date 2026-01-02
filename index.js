@@ -112,10 +112,33 @@ app.use(express.urlencoded({ extended: true, limit: '500mb' })); // Increased to
 
 // Add response caching headers for static and API responses
 app.use((req, res, next) => {
-  // Cache API responses for 30 seconds (GET requests only)
-  if (req.method === 'GET' && req.path.startsWith('/api/')) {
+  // List of endpoints that should NOT be cached (dynamic data)
+  const noCachePaths = [
+    '/api/admin/dashboard/stats',
+    '/api/admin/inquiries',
+    '/api/admin/quotations',
+    '/api/admin/orders',
+    '/api/inquiry/admin/all',
+    '/api/quotation',
+    '/api/orders',
+    '/api/inquiries',
+    '/api/quotations'
+  ];
+  
+  const shouldCache = req.method === 'GET' && 
+                     req.path.startsWith('/api/') && 
+                     !noCachePaths.some(path => req.path.startsWith(path));
+  
+  if (shouldCache) {
+    // Static or less frequently changing data - cache for 30 seconds
     res.set('Cache-Control', 'private, max-age=30');
+  } else if (req.method === 'GET' && req.path.startsWith('/api/')) {
+    // Dynamic data - no cache to ensure fresh data
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
   }
+  
   // Add ETag support
   res.set('ETag', 'W/"' + Date.now() + '"');
   next();
