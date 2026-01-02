@@ -600,6 +600,26 @@ router.post('/upload', [
       }
     });
 
+    // Send email to customer asynchronously when quotation file is uploaded
+    if (parsedCustomerInfo.email && parsedCustomerInfo.email !== 'customer@example.com') {
+      console.log('📧 Sending quotation upload email asynchronously...');
+      setImmediate(async () => {
+        try {
+          // Populate quotation with inquiry number for email
+          const inquiryForEmail = await Inquiry.findById(inquiryId).select('inquiryNumber').lean();
+          const inquiryNumber = inquiryForEmail?.inquiryNumber || null;
+          
+          // Fetch the saved quotation with all details for email
+          const quotationForEmail = await Quotation.findById(savedQuotation._id).lean();
+          
+          await sendQuotationSentEmail(quotationForEmail, inquiryNumber);
+          console.log('✅ Quotation upload email sent successfully');
+        } catch (emailError) {
+          console.error('❌ Email sending failed:', emailError);
+        }
+      });
+    }
+
   } catch (error) {
     console.error('Quotation upload error:', error);
     res.status(500).json({
