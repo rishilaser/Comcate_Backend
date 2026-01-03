@@ -246,7 +246,7 @@ class WebSocketService {
       type: 'notification',
       category: 'payment',
       title: 'Payment Received',
-      message: `Payment of $${amount} received for order ${order.orderNumber}. Transaction ID: ${transactionId}`,
+      message: `Payment of ₹${amount} received for order ${order.orderNumber}. Transaction ID: ${transactionId}`,
       data: {
         orderId: order._id,
         orderNumber: order.orderNumber,

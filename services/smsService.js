@@ -212,7 +212,7 @@ const sendQuotationNotificationSMS = async (quotation, customerInfo) => {
       return { success: false, message: 'Customer phone not available' };
     }
 
-    const message = `Quotation ${quotation.quotationNumber} ready for inquiry ${quotation.inquiry.inquiryNumber}. Total: $${quotation.totalAmount}. Valid until ${new Date(quotation.validUntil).toLocaleDateString()}. Check your email for details.`;
+    const message = `Quotation ${quotation.quotationNumber} ready for inquiry ${quotation.inquiry.inquiryNumber}. Total: ₹${quotation.totalAmount}. Valid until ${new Date(quotation.validUntil).toLocaleDateString()}. Check your email for details.`;
     
     const result = await sendSMS(customerInfo.phoneNumber, message);
     console.log('Quotation notification SMS result:', result);
@@ -275,7 +275,7 @@ const sendPaymentConfirmationSMS = async (order, customerInfo) => {
       return { success: false, message: 'Back office phone not configured' };
     }
 
-    const message = `Payment confirmed for order ${order.orderNumber}. Customer: ${customerInfo.firstName} ${customerInfo.lastName}. Amount: $${order.totalAmount}. Please update order status.`;
+    const message = `Payment confirmed for order ${order.orderNumber}. Customer: ${customerInfo.firstName} ${customerInfo.lastName}. Amount: ₹${order.totalAmount}. Please update order status.`;
     
     const result = await sendSMS(process.env.BACKOFFICE_PHONE, message);
     console.log('Payment confirmation SMS result:', result);

@@ -626,7 +626,7 @@ router.post('/update-order', authenticateToken, async (req, res) => {
       const Notification = require('../models/Notification');
       await Notification.createNotification({
         title: 'Payment Successful',
-        message: `Your payment of $${paymentAmount} for order ${existingOrder.orderNumber} has been received successfully. Your order will be confirmed by our team shortly.`,
+        message: `Your payment of ₹${paymentAmount} for order ${existingOrder.orderNumber} has been received successfully. Your order will be confirmed by our team shortly.`,
         type: 'success',
         userId: existingOrder.customer,
         relatedEntity: {
@@ -653,7 +653,7 @@ router.post('/update-order', authenticateToken, async (req, res) => {
       for (const admin of adminUsers) {
         await Notification.createNotification({
           title: 'Payment Received',
-          message: `Payment of $${paymentAmount} received for order ${existingOrder.orderNumber}. Customer: ${existingOrder.customer?.firstName || 'Unknown'} ${existingOrder.customer?.lastName || ''}. Transaction ID: ${transactionId}`,
+          message: `Payment of ₹${paymentAmount} received for order ${existingOrder.orderNumber}. Customer: ${existingOrder.customer?.firstName || 'Unknown'} ${existingOrder.customer?.lastName || ''}. Transaction ID: ${transactionId}`,
           type: 'success',
           userId: admin._id,
           relatedEntity: {
@@ -906,7 +906,7 @@ router.post('/verify', authenticateToken, [
       const Notification = require('../models/Notification');
       await Notification.createNotification({
         title: 'Payment Successful',
-        message: `Your payment of $${order.totalAmount} for order ${order.orderNumber} has been received successfully. Your order will be confirmed by our team shortly.`,
+        message: `Your payment of ₹${order.totalAmount} for order ${order.orderNumber} has been received successfully. Your order will be confirmed by our team shortly.`,
         type: 'success',
         userId: order.customer,
         relatedEntity: {
@@ -933,7 +933,7 @@ router.post('/verify', authenticateToken, [
       for (const admin of adminUsers) {
         await Notification.createNotification({
           title: 'Payment Received',
-          message: `Payment of $${paymentDetails.payment.amount} received for order ${order.orderNumber}. Customer: ${order.customer?.firstName || 'Unknown'} ${order.customer?.lastName || ''}. Transaction ID: ${razorpayPaymentId}`,
+          message: `Payment of ₹${paymentDetails.payment.amount} received for order ${order.orderNumber}. Customer: ${order.customer?.firstName || 'Unknown'} ${order.customer?.lastName || ''}. Transaction ID: ${razorpayPaymentId}`,
           type: 'success',
           userId: admin._id,
           relatedEntity: {

@@ -219,7 +219,7 @@ router.post('/create', [
             remarks: part.remarks || part.remark || ''
           })) : [],
           totalAmount: parseFloat(totalAmount),
-          currency: 'USD',
+          currency: 'INR',
           validUntil: validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
           terms: terms || 'Standard manufacturing terms apply. Payment required before production begins.'
         };
@@ -312,7 +312,7 @@ router.post('/create', [
         try {
           await sendSMS(
             quotationData.customerInfo.phone,
-            `Your quotation for inquiry ${inquiry.inquiryNumber} has been prepared. Total amount: $${totalAmount}. Please check your email for details.`
+            `Your quotation for inquiry ${inquiry.inquiryNumber} has been prepared. Total amount: ₹${totalAmount}. Please check your email for details.`
           );
           console.log('✅ SMS sent successfully');
         } catch (smsError) {
@@ -326,7 +326,7 @@ router.post('/create', [
       const Notification = require('../models/Notification');
       await Notification.createNotification({
         title: 'Quotation Created',
-        message: `Your quotation ${savedQuotation.quotationNumber} has been prepared for inquiry ${inquiry.inquiryNumber}. Total amount: $${totalAmount}. Please review and accept.`,
+        message: `Your quotation ${savedQuotation.quotationNumber} has been prepared for inquiry ${inquiry.inquiryNumber}. Total amount: ₹${totalAmount}. Please review and accept.`,
         type: 'info',
         userId: inquiry.customer._id,
         relatedEntity: {
@@ -586,7 +586,7 @@ router.post('/upload', [
         if (inquiry && inquiry.customer) {
           await Notification.createNotification({
             title: 'Quotation Uploaded',
-            message: `Your quotation ${savedQuotation.quotationNumber} has been uploaded for inquiry ${inquiry.inquiryNumber || inquiryId}. Total amount: $${totalAmount}.`,
+            message: `Your quotation ${savedQuotation.quotationNumber} has been uploaded for inquiry ${inquiry.inquiryNumber || inquiryId}. Total amount: ₹${totalAmount}.`,
             type: 'info',
             userId: inquiry.customer._id,
             relatedEntity: {
@@ -603,6 +603,10 @@ router.post('/upload', [
     // Send email to customer asynchronously when quotation file is uploaded
     if (parsedCustomerInfo.email && parsedCustomerInfo.email !== 'customer@example.com') {
       console.log('📧 Sending quotation upload email asynchronously...');
+      // Store file buffer and filename for email attachment (before async operation)
+      const pdfBufferForEmail = fileBuffer;
+      const pdfFileNameForEmail = fileName;
+      
       setImmediate(async () => {
         try {
           // Populate quotation with inquiry number for email
@@ -612,8 +616,9 @@ router.post('/upload', [
           // Fetch the saved quotation with all details for email
           const quotationForEmail = await Quotation.findById(savedQuotation._id).lean();
           
-          await sendQuotationSentEmail(quotationForEmail, inquiryNumber);
-          console.log('✅ Quotation upload email sent successfully');
+          // Pass PDF buffer and filename to email function for attachment
+          await sendQuotationSentEmail(quotationForEmail, inquiryNumber, pdfBufferForEmail, pdfFileNameForEmail);
+          console.log('✅ Quotation upload email sent successfully with PDF attachment');
         } catch (emailError) {
           console.error('❌ Email sending failed:', emailError);
         }
@@ -1010,7 +1015,7 @@ router.post('/:id/send', authenticateToken, async (req, res) => {
           if (quotation.customerInfo.phone) {
             const smsResult = await sendSMS(
               quotation.customerInfo.phone,
-              `Your quotation ${quotation.quotationNumber} has been sent. Total amount: $${quotation.totalAmount}. Please check your email for details.`
+              `Your quotation ${quotation.quotationNumber} has been sent. Total amount: ₹${quotation.totalAmount}. Please check your email for details.`
             );
             console.log('SMS result:', smsResult);
           } else {
@@ -1315,7 +1320,7 @@ router.get('/:id/pdf', authenticateToken, async (req, res) => {
             }))
           : [],
         totalAmount: quotation.totalAmount || 0,
-        currency: 'USD',
+        currency: 'INR',
         validUntil: quotation.validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         terms: quotation.terms || 'Standard manufacturing terms apply. Payment required before production begins.'
       };

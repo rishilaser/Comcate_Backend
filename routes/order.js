@@ -240,7 +240,7 @@ router.post('/', authenticateToken, [
             title: paymentMethod === 'cod' ? 'Order Created' : 'Payment Successful',
             message: paymentMethod === 'cod' 
               ? `Your order ${order.orderNumber} has been created. Payment will be collected on delivery.`
-              : `Your payment of $${order.totalAmount} for order ${order.orderNumber} has been received successfully. Your order will be confirmed by our team shortly.`,
+              : `Your payment of ₹${order.totalAmount} for order ${order.orderNumber} has been received successfully. Your order will be confirmed by our team shortly.`,
             type: 'success',
             userId: order.customer,
             relatedEntity: {
@@ -268,7 +268,7 @@ router.post('/', authenticateToken, [
           for (const admin of adminUsers) {
             await Notification.createNotification({
               title: 'Payment Received',
-              message: `Payment of $${order.totalAmount} received for order ${order.orderNumber}. Customer: ${order.customer?.firstName || 'Unknown'} ${order.customer?.lastName || ''}. Payment method: ${paymentMethod}`,
+              message: `Payment of ₹${order.totalAmount} received for order ${order.orderNumber}. Customer: ${order.customer?.firstName || 'Unknown'} ${order.customer?.lastName || ''}. Payment method: ${paymentMethod}`,
               type: 'success',
               userId: admin._id,
               relatedEntity: {

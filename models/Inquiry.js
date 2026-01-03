@@ -67,7 +67,7 @@ const inquirySchema = new mongoose.Schema({
   },
   currency: {
     type: String,
-    default: 'USD'
+    default: 'INR'
   },
   deliveryAddress: {
     street: String,

@@ -196,8 +196,8 @@ class PDFService {
       .fontSize(10)
       .font('Helvetica')
       .text(`Inquiry Number: ${inquiry.inquiryNumber}`, 50, this.doc.y)
-      .text(`Total Amount: ${quotationData.currency} ${quotationData.totalAmount.toFixed(2)}`, 50, this.doc.y + 15)
-      .text(`Currency: ${quotationData.currency}`, 50, this.doc.y + 15);
+      .text(`Total Amount: ${quotationData.currency || 'INR'} ₹${quotationData.totalAmount.toFixed(2)}`, 50, this.doc.y + 15)
+      .text(`Currency: ${quotationData.currency || 'INR'}`, 50, this.doc.y + 15);
   }
 
   // Generate parts table
@@ -458,7 +458,7 @@ class PDFService {
       .font('Helvetica-Bold')
       .fillColor('#000000')
       .text('Total:', startX + columnWidths.slice(0, 4).reduce((a, b) => a + b, 0), currentY)
-      .text(`$${order.totalAmount.toFixed(2)}`, startX + columnWidths.slice(0, 5).reduce((a, b) => a + b, 0), currentY);
+      .text(`₹${order.totalAmount.toFixed(2)}`, startX + columnWidths.slice(0, 5).reduce((a, b) => a + b, 0), currentY);
   }
 
   // Generate payment section
@@ -477,7 +477,7 @@ class PDFService {
       .font('Helvetica')
       .text(`Status: ${payment.status}`, 50, this.doc.y)
       .text(`Method: ${payment.method}`, 50, this.doc.y + 15)
-      .text(`Amount: $${payment.amount.toFixed(2)}`, 50, this.doc.y + 15);
+      .text(`Amount: INR ₹${payment.amount.toFixed(2)}`, 50, this.doc.y + 15);
 
     if (payment.transactionId) {
       this.doc.text(`Transaction ID: ${payment.transactionId}`, 50, this.doc.y + 15);

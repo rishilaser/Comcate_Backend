@@ -560,7 +560,7 @@ const sendInquiryNotification = async (inquiry) => {
         ['Created Date:', new Date(inquiry.createdAt).toLocaleDateString()],
         ['Total Parts:', inquiry.parts?.length || 0],
         ['Total Files:', inquiry.files?.length || 0],
-        ['Total Amount:', `$${inquiry.totalAmount || 0}`],
+        ['Total Amount:', `INR ₹${inquiry.totalAmount || 0}`],
         [],
         ['Special Instructions:', inquiry.specialInstructions || 'None']
       ];
@@ -722,7 +722,7 @@ const sendInquiryNotification = async (inquiry) => {
                   <div style="font-size: 12px; color: #666; text-transform: uppercase;">Parts</div>
                 </div>
                 <div style="background-color: white; padding: 15px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                  <div style="font-size: 24px; font-weight: bold; color: #2196F3;">$${inquiry.totalAmount || 0}</div>
+                  <div style="font-size: 24px; font-weight: bold; color: #2196F3;">INR ₹${inquiry.totalAmount || 0}</div>
                   <div style="font-size: 12px; color: #666; text-transform: uppercase;">Total Amount</div>
                 </div>
               </div>
@@ -797,7 +797,7 @@ const sendInquiryNotification = async (inquiry) => {
 };
 
 // Send quotation email to customer (when admin sends quotation)
-const sendQuotationSentEmail = async (quotation, inquiryNumber = null) => {
+const sendQuotationSentEmail = async (quotation, inquiryNumber = null, pdfBuffer = null, pdfFileName = null) => {
   try {
     console.log('=== SENDING QUOTATION SENT EMAIL ===');
     console.log('Quotation:', quotation.quotationNumber);
@@ -820,10 +820,51 @@ const sendQuotationSentEmail = async (quotation, inquiryNumber = null) => {
     const customerName = quotation.customerInfo.name || 'Valued Customer';
     const customerEmail = quotation.customerInfo.email;
     
+    // Prepare PDF attachment if available
+    const attachments = [];
+    
+    // If PDF buffer is provided directly, use it
+    if (pdfBuffer && Buffer.isBuffer(pdfBuffer)) {
+      console.log('📎 Attaching PDF from provided buffer, size:', pdfBuffer.length, 'bytes');
+      const fileName = pdfFileName || quotation.quotationPdfFilename || `${quotation.quotationNumber}.pdf`;
+      attachments.push({
+        filename: fileName,
+        content: pdfBuffer,
+        contentType: 'application/pdf'
+      });
+    } else {
+      // Try to download PDF from Cloudinary URL
+      const cloudinaryUrl = quotation.quotationPdfCloudinaryUrl || quotation.quotationPdf;
+      if (cloudinaryUrl && (typeof cloudinaryUrl === 'string' && (cloudinaryUrl.startsWith('http://') || cloudinaryUrl.startsWith('https://')))) {
+        try {
+          console.log('☁️ Downloading PDF from Cloudinary for email attachment:', cloudinaryUrl);
+          const response = await axios.get(cloudinaryUrl, {
+            responseType: 'arraybuffer',
+            timeout: 30000 // 30 second timeout
+          });
+          const downloadedBuffer = Buffer.from(response.data);
+          console.log('✅ PDF downloaded from Cloudinary, size:', downloadedBuffer.length, 'bytes');
+          
+          const fileName = pdfFileName || quotation.quotationPdfFilename || `${quotation.quotationNumber}.pdf`;
+          attachments.push({
+            filename: fileName,
+            content: downloadedBuffer,
+            contentType: 'application/pdf'
+          });
+        } catch (downloadError) {
+          console.error('❌ Error downloading PDF from Cloudinary for email attachment:', downloadError.message);
+          // Continue without attachment if download fails
+        }
+      } else {
+        console.log('⚠️ No PDF buffer or Cloudinary URL available for attachment');
+      }
+    }
+    
     const mailOptions = {
       from: process.env.SMTP_FROM || 'noreply@247cutbend.com',
       to: customerEmail,
       subject: `Quotation ${quotation.quotationNumber} - 247 CutBend`,
+      attachments: attachments.length > 0 ? attachments : undefined,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <div style="background-color: #FF9800; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
@@ -840,7 +881,7 @@ const sendQuotationSentEmail = async (quotation, inquiryNumber = null) => {
               <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">📋 Quotation Summary</h3>
               <p style="margin: 8px 0; color: #555;"><strong>Quotation Number:</strong> ${quotation.quotationNumber}</p>
               ${inquiryNumber ? `<p style="margin: 8px 0; color: #555;"><strong>Inquiry Number:</strong> ${inquiryNumber}</p>` : ''}
-              <p style="margin: 8px 0; color: #555;"><strong>Total Amount:</strong> ${quotation.currency || 'USD'} $${quotation.totalAmount}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Total Amount:</strong> ${quotation.currency || 'INR'} ₹${quotation.totalAmount}</p>
               ${quotation.validUntil ? `<p style="margin: 8px 0; color: #555;"><strong>Valid Until:</strong> ${new Date(quotation.validUntil).toLocaleDateString()}</p>` : ''}
             </div>
             
@@ -893,10 +934,18 @@ const sendQuotationSentEmail = async (quotation, inquiryNumber = null) => {
             </div>
             ` : ''}
             
+            ${attachments.length > 0 ? `
+            <div style="background-color: #e3f2fd; padding: 15px; border-radius: 5px; margin: 25px 0; border-left: 4px solid #2196F3;">
+              <h3 style="margin-top: 0; color: #333;">📎 Quotation PDF Attached</h3>
+              <p style="margin: 0; color: #555; line-height: 1.6;">The detailed quotation PDF is attached to this email for your reference. Please review the attached document for complete pricing and specifications.</p>
+            </div>
+            ` : ''}
+            
             <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 25px 0;">
               <h3 style="margin-top: 0; color: #333;">What's Next?</h3>
               <ul style="margin: 10px 0; padding-left: 20px; color: #555;">
-                <li>Please log in to your account to view the full quotation details</li>
+                <li>Please review the attached quotation PDF</li>
+                <li>Log in to your account to view the full quotation details</li>
                 <li>Review the quotation and accept or request changes</li>
                 <li>If you have any questions, please don't hesitate to contact us</li>
               </ul>
@@ -916,12 +965,17 @@ const sendQuotationSentEmail = async (quotation, inquiryNumber = null) => {
     console.log('Sending quotation email with options:', {
       from: mailOptions.from,
       to: mailOptions.to,
-      subject: mailOptions.subject
+      subject: mailOptions.subject,
+      hasAttachment: attachments.length > 0,
+      attachmentCount: attachments.length
     });
 
     const result = await transporter.sendMail(mailOptions);
     console.log('✅ Quotation sent email sent successfully!');
     console.log('Message ID:', result.messageId);
+    if (attachments.length > 0) {
+      console.log('📎 PDF attachment included in email');
+    }
     
     // Send SMS notification to customer
     try {
@@ -995,7 +1049,7 @@ const sendQuotationEmail = async (quotation) => {
             <h3>Quotation Summary:</h3>
             <p><strong>Quotation Number:</strong> ${quotation.quotationNumber}</p>
             <p><strong>Inquiry Number:</strong> ${quotation.inquiry.inquiryNumber}</p>
-            <p><strong>Total Amount:</strong> ${quotation.currency} ${quotation.totalAmount}</p>
+            <p><strong>Total Amount:</strong> ${quotation.currency || 'INR'} ₹${quotation.totalAmount}</p>
             <p><strong>Valid Until:</strong> ${new Date(quotation.validUntil).toLocaleDateString()}</p>
             
             <h3>Parts & Pricing:</h3>
@@ -1017,8 +1071,8 @@ const sendQuotationEmail = async (quotation) => {
                     <td style="border: 1px solid #ddd; padding: 8px;">${part.material}</td>
                     <td style="border: 1px solid #ddd; padding: 8px;">${part.thickness}mm</td>
                     <td style="border: 1px solid #ddd; padding: 8px;">${part.quantity}</td>
-                    <td style="border: 1px solid #ddd; padding: 8px;">$${part.unitPrice}</td>
-                    <td style="border: 1px solid #ddd; padding: 8px;">$${part.totalPrice}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px;">₹${part.unitPrice}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px;">₹${part.totalPrice}</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -1105,7 +1159,7 @@ const sendOrderConfirmation = async (order) => {
             <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
               <h3 style="margin-top: 0;">Order Details:</h3>
               <p><strong>Order Number:</strong> ${order.orderNumber}</p>
-              <p><strong>Total Amount:</strong> ${order.currency || 'USD'} $${order.totalAmount}</p>
+              <p><strong>Total Amount:</strong> ${order.currency || 'INR'} ₹${order.totalAmount}</p>
               <p><strong>Payment Status:</strong> ${order.payment ? (order.payment.status === 'completed' ? '✅ Completed' : order.payment.status) : 'Completed'}</p>
               <p><strong>Order Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}</p>
               <p><strong>Confirmed Date:</strong> ${order.confirmedAt ? new Date(order.confirmedAt).toLocaleDateString() : new Date().toLocaleDateString()}</p>
@@ -1374,7 +1428,7 @@ const sendCustomerPaymentConfirmation = async (order) => {
             <div style="background-color: #e8f5e8; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #4CAF50;">
               <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">💳 Payment Details</h3>
               <p style="margin: 8px 0; color: #555;"><strong>Order Number:</strong> ${order.orderNumber}</p>
-              <p style="margin: 8px 0; color: #555;"><strong>Payment Amount:</strong> ${order.currency || 'USD'} $${order.totalAmount || order.payment?.amount || 0}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Payment Amount:</strong> ${order.currency || 'INR'} ₹${order.totalAmount || order.payment?.amount || 0}</p>
               <p style="margin: 8px 0; color: #555;"><strong>Payment Method:</strong> ${paymentMethod}</p>
               <p style="margin: 8px 0; color: #555;"><strong>Transaction ID:</strong> ${transactionId}</p>
               <p style="margin: 8px 0; color: #555;"><strong>Payment Date:</strong> ${paymentDate.toLocaleDateString()} at ${paymentDate.toLocaleTimeString()}</p>
@@ -1460,7 +1514,7 @@ const sendPaymentConfirmation = async (order) => {
             <h3>Payment Details:</h3>
             <p><strong>Order Number:</strong> ${order.orderNumber}</p>
             <p><strong>Customer:</strong> ${order.customer?.firstName || 'Unknown'} ${order.customer?.lastName || ''}</p>
-            <p><strong>Amount:</strong> $${order.totalAmount}</p>
+            <p><strong>Amount:</strong> INR ₹${order.totalAmount}</p>
             <p><strong>Payment Method:</strong> ${order.payment?.method || 'Online'}</p>
             <p><strong>Transaction ID:</strong> ${order.payment?.transactionId || 'N/A'}</p>
             <p><strong>Paid At:</strong> ${order.payment?.paidAt ? new Date(order.payment.paidAt).toLocaleString() : new Date().toLocaleString()}</p>
@@ -1600,7 +1654,7 @@ const sendProductionStartedEmail = async (order) => {
             
             <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #4CAF50;">
               <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">📦 Order Details</h3>
-              <p style="margin: 8px 0; color: #555;"><strong>Total Amount:</strong> ${order.currency || 'USD'} $${order.totalAmount}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Total Amount:</strong> ${order.currency || 'INR'} ₹${order.totalAmount}</p>
               <p style="margin: 8px 0; color: #555;"><strong>Order Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}</p>
               ${order.parts && order.parts.length > 0 ? `
               <p style="margin: 8px 0; color: #555;"><strong>Number of Parts:</strong> ${order.parts.length}</p>
@@ -1702,7 +1756,7 @@ const sendOrderReadyEmail = async (order) => {
             
             <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #4CAF50;">
               <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px; font-weight: 600;">📋 Order Summary</h3>
-              <p style="margin: 8px 0; color: #555;"><strong>Total Amount:</strong> ${order.currency || 'USD'} $${order.totalAmount}</p>
+              <p style="margin: 8px 0; color: #555;"><strong>Total Amount:</strong> ${order.currency || 'INR'} ₹${order.totalAmount}</p>
               <p style="margin: 8px 0; color: #555;"><strong>Order Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}</p>
               ${order.parts && order.parts.length > 0 ? `
               <p style="margin: 8px 0; color: #555;"><strong>Number of Parts:</strong> ${order.parts.length}</p>
@@ -1797,7 +1851,7 @@ const sendDeliveryTimeNotification = async (order) => {
             <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
               <h3 style="margin-top: 0;">Order Details:</h3>
               <p><strong>Order Number:</strong> ${order.orderNumber}</p>
-              <p><strong>Total Amount:</strong> ${order.currency || 'USD'} ${order.totalAmount}</p>
+              <p><strong>Total Amount:</strong> ${order.currency || 'INR'} ₹${order.totalAmount}</p>
               <p><strong>Current Status:</strong> ${order.status.charAt(0).toUpperCase() + order.status.slice(1).replace('_', ' ')}</p>
             </div>
             
